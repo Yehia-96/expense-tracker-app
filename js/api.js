@@ -52,6 +52,44 @@ export async function signIn(email, password) {
   accept(await authRequest('token?grant_type=password', { email: email.trim(), password }));
 }
 
+/** Emails a link that opens this app ready to set a new password. */
+export async function requestPasswordReset(email) {
+  const back = encodeURIComponent(location.origin + location.pathname);
+  await authRequest(`recover?redirect_to=${back}`, { email: email.trim() });
+}
+
+/**
+ * The reset link arrives as #access_token=…&refresh_token=…&type=recovery. Signs in with it
+ * and says so; any other address is left alone.
+ */
+export function acceptRecoveryLink(hash) {
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  if (params.get('type') !== 'recovery' || !params.get('access_token')) {
+    const problem = params.get('error_description');
+    return problem ? { error: problem.replace(/\+/g, ' ') } : null;
+  }
+  const token = params.get('access_token');
+  // The user's id and email are inside the token itself.
+  const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+  saveSession({
+    access_token: token,
+    refresh_token: params.get('refresh_token'),
+    expires_at: Date.now() + Number(params.get('expires_in') || 3600) * 1000,
+    user: { id: claims.sub, email: claims.email },
+  });
+  return { recovered: true };
+}
+
+export async function setPassword(password) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: 'PUT',
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.msg || json.error_description || json.message || `Could not change it (${res.status}).`);
+}
+
 export async function signOut() {
   const token = session?.access_token;
   saveSession(null);

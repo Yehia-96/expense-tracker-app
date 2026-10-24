@@ -222,6 +222,37 @@ function renderSignIn(error = '') {
       <div class="field"><label for="password">Password</label>
         <input class="input" id="password" name="password" type="password" autocomplete="current-password" required></div>
       <button class="btn primary wide" type="submit">Sign in</button>
+      <button class="btn wide" type="button" data-act="forgot" style="margin-top:10px;border:0;background:none;color:var(--accent)">Forgot your password?</button>
+    </form>`;
+}
+
+function renderForgot(message = '', error = '') {
+  app.innerHTML = `
+    <form class="signin" data-form="forgot">
+      <div class="brand">${icon('brand')}</div>
+      <h1>Reset your password</h1>
+      <p>We will email you a link. Open it on this iPhone and it brings you back here to choose a new password. It is the same account as Work Tracker, so the new password works there too.</p>
+      ${error ? `<div class="problem">${esc(error)}</div>` : ''}
+      ${message ? `<div class="problem" style="background:var(--positive-soft);color:var(--positive)">${esc(message)}</div>` : ''}
+      <div class="field"><label for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="username" required></div>
+      <button class="btn primary wide" type="submit">Email me a link</button>
+      <button class="btn wide" type="button" data-act="tosignin" style="margin-top:10px;border:0;background:none;color:var(--accent)">Back to sign in</button>
+    </form>`;
+}
+
+function renderNewPassword(error = '') {
+  app.innerHTML = `
+    <form class="signin" data-form="newpassword">
+      <div class="brand">${icon('brand')}</div>
+      <h1>Choose a new password</h1>
+      <p>For ${esc(api.userEmail() ?? 'your account')}. Use it on the PC and in Work Tracker too.</p>
+      ${error ? `<div class="problem">${esc(error)}</div>` : ''}
+      <div class="field"><label for="password">New password</label>
+        <input class="input" id="password" name="password" type="password" autocomplete="new-password" minlength="6" required></div>
+      <div class="field"><label for="again">Type it again</label>
+        <input class="input" id="again" name="again" type="password" autocomplete="new-password" required></div>
+      <button class="btn primary wide" type="submit">Save new password</button>
     </form>`;
 }
 
@@ -687,6 +718,8 @@ document.addEventListener('click', async (event) => {
     loan: () => openLoan(el.dataset.id),
     person: () => openPerson(el.dataset.id),
     account: openAccount,
+    forgot: () => renderForgot(),
+    tosignin: () => renderSignIn(),
     syncnow: async () => { closeSheet(); await syncNow(); },
     unpick: () => { pickedFiles.splice(Number(el.dataset.index), 1); drawThumbs(el.closest('.sheet')); },
     signout: async () => {
@@ -720,6 +753,28 @@ document.addEventListener('submit', async (event) => {
       if (state.syncError) toast(`Could not sync: ${state.syncError}`, true);
       return;
     }
+    if (form.dataset.form === 'forgot') {
+      try {
+        await api.requestPasswordReset(form.email.value);
+        renderForgot(`If ${form.email.value.trim()} has an account, a link is on its way. Check your inbox, and your spam folder.`);
+      } catch (e) {
+        renderForgot('', e.message);
+      }
+      return;
+    }
+    if (form.dataset.form === 'newpassword') {
+      if (form.password.value !== form.again.value) return renderNewPassword('The two passwords are not the same.');
+      try {
+        await api.setPassword(form.password.value);
+      } catch (e) {
+        return renderNewPassword(e.message);
+      }
+      await store.useAccount(api.userId());
+      await reload();
+      toast('Password changed. You are signed in.');
+      syncNow({ quiet: true });
+      return;
+    }
     if (form.dataset.form === 'expense') await submitExpense(form);
     if (form.dataset.form === 'moneyin') await submitMoneyIn(form);
     if (form.dataset.form === 'repay') await submitRepay(form);
@@ -744,6 +799,15 @@ setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet:
     return reload();
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  // Arriving from a password reset email: signed in by the link, now choose the password.
+  const recovery = api.acceptRecoveryLink(location.hash);
+  if (recovery) {
+    history.replaceState(null, '', location.pathname);
+    if (recovery.error) return renderForgot('', `That link did not work: ${recovery.error}. Ask for a new one.`);
+    return renderNewPassword();
+  }
+
   if (!api.isSignedIn()) return renderSignIn();
   await store.useAccount(api.userId());
   await reload();
