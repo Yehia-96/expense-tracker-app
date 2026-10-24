@@ -1,0 +1,137 @@
+// Rows the phone creates, written exactly as the desktop stores them: every column present,
+// ids as upper-case GUIDs, money in cents, dates as .NET ticks (strings), flags as 0/1.
+// test/writes.test.mjs checks the column sets against rows the desktop wrote.
+import { msToTicks, GroupKind, Direction } from './calc.js';
+
+export const LOAN_PAYMENT_GROUP = Object.freeze({ name: 'Loan payments', icon: 'Receipt', colorHex: '#F0A868' });
+
+export const newId = () => crypto.randomUUID().toUpperCase();
+export const toCents = (amount) => Math.round(Number(amount) * 100);
+
+const nowTicks = () => msToTicks(Date.now());
+
+/** Splits "food, coffee #treat" into tag names the way the desktop does: lower case, no '#'. */
+export function parseTags(text) {
+  return [...new Set((text || '').split(/[\s,;]+/).map((t) => t.replace(/^#+/, '').toLowerCase()).filter(Boolean))];
+}
+
+function expenseRow({ id, groupId, title, amountCents, occurredOn, payee, note, loanPaymentId = null }) {
+  return {
+    Id: id,
+    Amount: amountCents,
+    Counterparty: null,
+    CreatedAt: nowTicks(),
+    Direction: null,
+    DueDate: null,
+    EntryType: 'Expense',
+    ExchangedAmount: null,
+    ExchangedCurrency: null,
+    GroupId: groupId,
+    IsClosed: null,
+    LoanPaymentId: loanPaymentId,
+    MovesCash: null,
+    Note: note?.trim() ? note.trim() : null,
+    OccurredOn: msToTicks(occurredOn),
+    Payee: payee?.trim() ? payee.trim() : null,
+    PersonId: null,
+    QuotedRate: null,
+    RecurringRuleId: null,
+    Title: title.trim(),
+    UpdatedAt: null,
+  };
+}
+
+/**
+ * A new expense, with its tags and any receipts already stored on the phone.
+ * `files`: [{ hash, fileName, mediaType, size, isImage }].
+ */
+export function addExpense(model, { groupId, title, amount, occurredOn, payee, note, tags, files = [] }) {
+  const id = newId();
+  const changes = [{ tbl: 'Entries', id, data: expenseRow({ id, groupId, title, amountCents: toCents(amount), occurredOn, payee, note }) }];
+
+  // Tags are shared by name; a new name makes a new tag.
+  const existing = new Map();
+  for (const r of model.rawTags ?? []) existing.set(r.Name, r.Id);
+  for (const name of parseTags(tags)) {
+    let tagId = existing.get(name);
+    if (!tagId) {
+      tagId = newId();
+      existing.set(name, tagId);
+      changes.push({ tbl: 'Tags', id: tagId, data: { Id: tagId, Name: name, ColorHex: '#8B93A7' } });
+    }
+    changes.push({ tbl: 'EntryTags', id: `${id}:${tagId}`, data: { EntryId: id, TagId: tagId } });
+  }
+
+  for (const f of files) {
+    const attachmentId = newId();
+    changes.push({
+      tbl: 'Attachments', id: attachmentId, data: {
+        Id: attachmentId, EntryId: id, FileName: f.fileName, ContentHash: f.hash, MediaType: f.mediaType,
+        SizeBytes: f.size, IsImage: f.isImage ? 1 : 0, AddedAt: nowTicks(),
+      },
+    });
+  }
+
+  return changes;
+}
+
+/** Money arriving, filed in the cash ledger as Received. */
+export function addMoneyIn({ currency, amount, description, occurredOn }) {
+  const id = newId();
+  return [{
+    tbl: 'CashTransactions', id, data: {
+      Id: id, Currency: currency, Amount: toCents(amount), Description: description.trim(),
+      OccurredOn: msToTicks(occurredOn), CreatedAt: nowTicks(), Kind: 0,
+    },
+  }];
+}
+
+/**
+ * A repayment against a loan. Paying back money you borrowed is also filed as an expense in
+ * the project's "Loan payments" group, made here if the project has none yet, as the desktop's
+ * LoanService does. Being paid back is cash arriving, and files no expense.
+ */
+export function addRepayment(model, { loan, amount, paidOn, note }) {
+  const paymentId = newId();
+  const amountCents = toCents(amount);
+  const changes = [{
+    tbl: 'LoanPayments', id: paymentId, data: {
+      Id: paymentId, LoanEntryId: loan.id, Amount: amountCents, PaidOn: msToTicks(paidOn),
+      Note: note?.trim() ? note.trim() : null, CreatedAt: nowTicks(),
+    },
+  }];
+
+  if (loan.direction !== Direction.Borrowed) return changes;
+
+  const projectId = loan.group.projectId;
+  let group = [...model.groups.values()].find((g) => g.projectId === projectId && g.name === LOAN_PAYMENT_GROUP.name);
+
+  if (!group) {
+    const groupId = newId();
+    const nextOrder = Math.max(-1, ...[...model.groups.values()].filter((g) => g.projectId === projectId).map((g) => g.sortOrder)) + 1;
+    changes.push({
+      tbl: 'Groups', id: groupId, data: {
+        Id: groupId, ProjectId: projectId, Name: LOAN_PAYMENT_GROUP.name, Kind: GroupKind.Expense,
+        Icon: LOAN_PAYMENT_GROUP.icon, ColorHex: LOAN_PAYMENT_GROUP.colorHex, Budget: null, SortOrder: nextOrder,
+        IsArchived: 0, CreatedAt: nowTicks(), BudgetPeriod: 0, SubBudget: null, SubBudgetPeriod: 0,
+      },
+    });
+    group = { id: groupId };
+  }
+
+  const entryId = newId();
+  changes.push({
+    tbl: 'Entries', id: entryId, data: expenseRow({
+      id: entryId, groupId: group.id, title: `Repaid: ${loan.title}`, amountCents, occurredOn: paidOn,
+      payee: loan.counterparty, note, loanPaymentId: paymentId,
+    }),
+  });
+
+  return changes;
+}
+
+/** SHA-256 of a file as lower-case hex: its name in the store, on the phone and the PC alike. */
+export async function hashOf(blob) {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
