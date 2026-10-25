@@ -772,7 +772,7 @@ function renderShortcut() {
 
     <div class="section"><span>2 · Make the automation</span></div>
     <section class="card pad"><ol style="margin:0;padding-left:20px;line-height:1.5">
-      ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Transaction')}. Pick your cards, choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
+      ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Wallet')} (older iOS: ${b('Transaction')}). Pick the cards to watch and leave the categories and merchants on ${b('Any')}. Choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
       ${step(2, `Add ${b('Get Contents of URL')}. Paste the ${b('Address')}. Tap the arrow to show more: ${b('Method')} ${b('POST')}, ${b('Request Body')} ${b('JSON')}, and add three Text fields:
         <br>${b('key')} = paste your capture key
         <br>${b('amount')} = ${b('Shortcut Input')} → ${b('Amount')}
