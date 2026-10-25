@@ -778,9 +778,9 @@ function renderShortcut() {
         <br>${b('amount')} = ${b('Shortcut Input')} → ${b('Amount')}
         <br>${b('merchant')} = ${b('Shortcut Input')} → ${b('Merchant')}`)}
       ${step(3, `Add ${b('Split Text')}, split ${b('Contents of URL')} by ${b('New Lines')}.`)}
-      ${step(4, `Add ${b('Choose from List')} on the split text. Set its prompt to "Which group?".`)}
+      ${step(4, `Add ${b('Choose from List')} on the split text. Set its prompt to "Which group?" and leave ${b('Select Multiple')} off.`)}
       ${step(5, `Add another ${b('Get Contents of URL')}, set up exactly like step 2, with two more Text fields:
-        <br>${b('choice')} = ${b('Chosen Item')}
+        <br>${b('choice')} = ${b('Selected Item')} from Choose from List (older iOS: ${b('Chosen Item')})
         <br>${b('card')} = ${b('Shortcut Input')} → ${b('Card or Pass')}`)}
       ${step(6, `Add ${b('Show Notification')} with the ${b('Contents of URL')} from step 5. It says what was filed.`)}
     </ol>
