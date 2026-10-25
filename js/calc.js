@@ -57,6 +57,7 @@ export function buildModel(rows) {
     counterparty: e.Counterparty, direction: e.Direction === null || e.Direction === undefined ? null : Number(e.Direction),
     dueDate: ticksToMs(e.DueDate), isClosed: bool(e.IsClosed), movesCash: bool(e.MovesCash),
     personId: e.PersonId ?? null, payments: [],
+    raw: e, // the row as stored, so an edit can keep every column it does not touch
   }));
 
   const entryById = new Map(entries.map((e) => [e.id, e]));
@@ -67,8 +68,10 @@ export function buildModel(rows) {
   for (const p of payments) p.loan?.payments.push(p);
 
   const tags = new Map(by('Tags').map((t) => [t.Id, t.Name]));
+  const tagRows = by('Tags');
+  const entryTagRows = by('EntryTags');
   const tagsByEntry = new Map();
-  for (const et of by('EntryTags')) {
+  for (const et of entryTagRows) {
     const name = tags.get(et.TagId);
     if (!name) continue;
     if (!tagsByEntry.has(et.EntryId)) tagsByEntry.set(et.EntryId, []);
@@ -89,7 +92,10 @@ export function buildModel(rows) {
   const loans = entries.filter((e) => e.type === 'Loan');
   for (const e of entries) e.tags = tagsByEntry.get(e.id) ?? [];
 
-  return { projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments };
+  return {
+    projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments,
+    rawTags: tagRows, entryTagRows,
+  };
 }
 
 const currencyOf = (entry) => entry?.group?.project?.currency ?? null;

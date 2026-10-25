@@ -90,6 +90,27 @@ export async function setPassword(password) {
   if (!res.ok) throw new Error(json.msg || json.error_description || json.message || `Could not change it (${res.status}).`);
 }
 
+/** Where the Apple Pay shortcut sends payments (supabase/functions/et-capture). */
+export const CAPTURE_URL = `${SUPABASE_URL}/functions/v1/et-capture`;
+
+/**
+ * Makes a new capture key for the shortcut and retires any earlier one. Only its SHA-256 goes
+ * to the server; the key itself is shown here, to be pasted into the shortcut.
+ */
+export async function createCaptureKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  const key = `etk_${btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+  const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+  await call(`${SUPABASE_URL}/rest/v1/et_capture_keys?user_id=eq.${userId()}`, { method: 'DELETE' });
+  await call(`${SUPABASE_URL}/rest/v1/et_capture_keys`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    body: JSON.stringify({ key_hash: hash }),
+  });
+  return key;
+}
+
 export async function signOut() {
   const token = session?.access_token;
   saveSession(null);

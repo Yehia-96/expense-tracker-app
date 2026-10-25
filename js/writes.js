@@ -49,30 +49,97 @@ export function addExpense(model, { groupId, title, amount, occurredOn, payee, n
   const id = newId();
   const changes = [{ tbl: 'Entries', id, data: expenseRow({ id, groupId, title, amountCents: toCents(amount), occurredOn, payee, note }) }];
 
-  // Tags are shared by name; a new name makes a new tag.
-  const existing = new Map();
-  for (const r of model.rawTags ?? []) existing.set(r.Name, r.Id);
-  for (const name of parseTags(tags)) {
-    let tagId = existing.get(name);
+  changes.push(...tagChanges(model, id, parseTags(tags)));
+  changes.push(...attachmentRows(id, files));
+  return changes;
+}
+
+/**
+ * Brings an entry's tags to `names`: links the ones it lacks (making a tag the first time a
+ * name is used, as the desktop does) and unlinks the ones it no longer has.
+ */
+function tagChanges(model, entryId, names) {
+  const changes = [];
+  const byName = new Map((model.rawTags ?? []).map((t) => [t.Name, t.Id]));
+  const linked = (model.entryTagRows ?? []).filter((et) => et.EntryId === entryId);
+  const wanted = new Set();
+
+  for (const name of names) {
+    let tagId = byName.get(name);
     if (!tagId) {
       tagId = newId();
-      existing.set(name, tagId);
+      byName.set(name, tagId);
       changes.push({ tbl: 'Tags', id: tagId, data: { Id: tagId, Name: name, ColorHex: '#8B93A7' } });
     }
-    changes.push({ tbl: 'EntryTags', id: `${id}:${tagId}`, data: { EntryId: id, TagId: tagId } });
+    wanted.add(tagId);
+    if (!linked.some((et) => et.TagId === tagId)) {
+      changes.push({ tbl: 'EntryTags', id: `${entryId}:${tagId}`, data: { EntryId: entryId, TagId: tagId } });
+    }
   }
 
+  for (const et of linked.filter((x) => !wanted.has(x.TagId))) {
+    changes.push({ tbl: 'EntryTags', id: `${entryId}:${et.TagId}`, data: null });
+  }
+
+  return changes;
+}
+
+function attachmentRows(entryId, files) {
+  const changes = [];
   for (const f of files) {
     const attachmentId = newId();
     changes.push({
       tbl: 'Attachments', id: attachmentId, data: {
-        Id: attachmentId, EntryId: id, FileName: f.fileName, ContentHash: f.hash, MediaType: f.mediaType,
+        Id: attachmentId, EntryId: entryId, FileName: f.fileName, ContentHash: f.hash, MediaType: f.mediaType,
         SizeBytes: f.size, IsImage: f.isImage ? 1 : 0, AddedAt: nowTicks(),
       },
     });
   }
-
   return changes;
+}
+
+/**
+ * An edited expense. Starts from the row as stored, so columns the phone does not show (a
+ * conversion's amounts, anything a later desktop version adds) come through untouched.
+ * `removeAttachments`: ids of receipts to drop; `files`: new receipts already on the phone.
+ */
+export function updateExpense(model, entry, {
+  groupId, title, amount, occurredOn, payee, note, tags, files = [], removeAttachments = [],
+}) {
+  if (entry.loanPaymentId) throw new Error('A repayment entry follows its loan; change the repayment instead.');
+
+  const data = {
+    ...entry.raw,
+    GroupId: groupId,
+    Title: title.trim(),
+    Amount: toCents(amount),
+    OccurredOn: msToTicks(occurredOn),
+    Payee: payee?.trim() ? payee.trim() : null,
+    Note: note?.trim() ? note.trim() : null,
+    UpdatedAt: nowTicks(),
+  };
+
+  return [
+    { tbl: 'Entries', id: entry.id, data },
+    ...tagChanges(model, entry.id, parseTags(tags)),
+    ...attachmentRows(entry.id, files),
+    ...removeAttachments.map((id) => ({ tbl: 'Attachments', id, data: null })),
+  ];
+}
+
+/**
+ * Deletes an expense with its tag links and receipts. The desktop would remove those by
+ * cascade anyway; saying so outright keeps the phone's own copy right before the next sync.
+ */
+export function deleteExpense(model, entry) {
+  if (entry.loanPaymentId) throw new Error('A repayment entry follows its loan; delete the repayment instead.');
+
+  return [
+    { tbl: 'Entries', id: entry.id, data: null },
+    ...(model.entryTagRows ?? []).filter((et) => et.EntryId === entry.id)
+      .map((et) => ({ tbl: 'EntryTags', id: `${entry.id}:${et.TagId}`, data: null })),
+    ...model.attachments.filter((a) => a.entryId === entry.id).map((a) => ({ tbl: 'Attachments', id: a.id, data: null })),
+  ];
 }
 
 /** Money arriving, filed in the cash ledger as Received. */

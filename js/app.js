@@ -6,7 +6,7 @@ import {
   buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled,
   Currencies, GroupKind, Direction, Period,
 } from './calc.js';
-import { addExpense, addMoneyIn, addRepayment, hashOf, LOAN_PAYMENT_GROUP } from './writes.js';
+import { addExpense, addMoneyIn, addRepayment, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP } from './writes.js';
 
 const app = document.getElementById('app');
 const state = { model: null, syncing: false, syncError: null, lastSync: null, pending: 0, sheet: null };
@@ -30,6 +30,8 @@ const ICONS = {
   close: 'M6 6l12 12M18 6L6 18', refresh: 'M20 11a8 8 0 0 0-14.6-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5L20 16M20 20v-4h-4',
   signout: 'M15 4h4v16h-4M10 17l5-5-5-5M15 12H3', brand: 'M7 8h10M7 12h10M7 16h6', camera: 'M4 7h3l2-2h6l2 2h3v12H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   money: 'M12 15V4M8 8l4-4 4 4M4 15v5h16v-5',
+  pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+  key: 'M14 10a4 4 0 1 0-3.5 4L4 20.5V23h3v-2h2v-2h2l1.5-1.5A4 4 0 0 0 14 10zM15.5 8.5h.01',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -205,6 +207,7 @@ function render() {
   if (r.kind === 'p' && m().projects.has(r.id)) return renderProject(m().projects.get(r.id));
   if (r.kind === 'g' && m().groups.has(r.id)) return renderGroup(m().groups.get(r.id));
   if (r.kind === 'people') return renderPeople();
+  if (r.kind === 'shortcut') return renderShortcut();
   return renderHome();
 }
 
@@ -481,40 +484,53 @@ function openAdd() {
 }
 
 let pickedFiles = [];
+let keptFiles = [];
 
-function openExpense(groupId) {
-  const projects = activeProjects();
+const dateValue = (ms) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/** The expense form, blank or (with `entryId`) filled in to edit that entry. */
+function openExpense(groupId, entryId = null) {
+  const editing = entryId ? m().entryById.get(entryId) : null;
+  // An entry keeps its currency: its amount means nothing in the other one.
+  const projects = activeProjects().filter((p) => !editing || p.currency === editing.group.project.currency);
   const remembered = localStorage.getItem('et.lastGroup');
   const expenseGroups = (pid) => groupsOf(pid).filter((g) => g.kind === GroupKind.Expense && !isRepaymentGroup(g));
-  const start = m().groups.get(groupId) ?? m().groups.get(remembered) ?? expenseGroups(projects[0]?.id)[0];
+  const start = editing?.group ?? m().groups.get(groupId) ?? m().groups.get(remembered) ?? expenseGroups(projects[0]?.id)[0];
   if (!start) return toast('Make an expense group on the PC first.', true);
 
   pickedFiles = [];
+  keptFiles = editing ? attachmentsOf(editing.id) : [];
+  const value = (v) => esc(v ?? '');
   const groupOptions = (pid, selected) => expenseGroups(pid).map((g) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
 
-  const sheet = openSheet(`<form data-form="expense">
-    <h2>New expense</h2><div class="subtitle" data-role="context"></div>
+  const sheet = openSheet(`<form data-form="expense" ${editing ? `data-entry="${editing.id}"` : ''}>
+    <h2>${editing ? 'Edit expense' : 'New expense'}</h2><div class="subtitle" data-role="context"></div>
     <div class="two">
       <div class="field"><label>Project</label><select class="input" name="project">${projects.map((p) =>
         `<option value="${p.id}" ${p.id === start.projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label>Group</label><select class="input" name="group">${groupOptions(start.projectId, start.id)}</select></div>
     </div>
-    <div class="field"><label>What was it?</label><input class="input" name="title" required autocomplete="off" placeholder="Weekly shop"></div>
+    <div class="field"><label>What was it?</label><input class="input" name="title" required autocomplete="off" placeholder="Weekly shop" value="${value(editing?.title)}"></div>
     <div class="two">
-      <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"></div>
-      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${todayValue()}" required></div>
+      <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"
+        value="${editing ? (editing.amount / 100).toFixed(2) : ''}"></div>
+      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${editing ? dateValue(editing.occurredOn) : todayValue()}" required></div>
     </div>
-    <div class="field"><label>Paid to <span class="opt">(optional)</span></label><input class="input" name="payee" autocomplete="off"></div>
-    <div class="field"><label>Tags <span class="opt">(optional)</span></label><input class="input" name="tags" autocomplete="off" placeholder="food, coffee"></div>
-    <div class="field"><label>Note <span class="opt">(optional)</span></label><textarea class="input" name="note"></textarea></div>
+    <div class="field"><label>Paid to <span class="opt">(optional)</span></label><input class="input" name="payee" autocomplete="off" value="${value(editing?.payee)}"></div>
+    <div class="field"><label>Tags <span class="opt">(optional)</span></label><input class="input" name="tags" autocomplete="off" placeholder="food, coffee" value="${value(editing?.tags.join(', '))}"></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><textarea class="input" name="note">${value(editing?.note)}</textarea></div>
     <div class="field"><label>Receipts <span class="opt">(optional)</span></label>
       <label class="pick">${icon('camera')}Take a photo or choose a file
         <input type="file" name="files" accept="image/*,application/pdf" multiple hidden></label>
       <div class="thumbs" data-role="thumbs"></div></div>
-    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Add expense</button></div>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">${editing ? 'Save changes' : 'Add expense'}</button></div>
   </form>`);
 
   const form = sheet.querySelector('form');
+  drawThumbs(sheet);
   const context = () => {
     const p = m().projects.get(form.project.value);
     sheet.querySelector('[data-role=context]').textContent = p ? `Comes off your ${CASH_NAME[p.currency]} cash.` : '';
@@ -533,9 +549,23 @@ function openExpense(groupId) {
 
 function drawThumbs(sheet) {
   const box = sheet.querySelector('[data-role=thumbs]');
-  box.innerHTML = pickedFiles.map((f, i) => `<div class="thumb" ${f.type.startsWith('image/') ? `style="background-image:url(${URL.createObjectURL(f)})"` : ''}>
+  // Receipts already filed (when editing) first, then ones picked now.
+  box.innerHTML = keptFiles.map((f, i) => `<div class="thumb" data-kept="${f.hash}"><span>${esc(f.fileName.split('.').pop().toUpperCase())}</span>
+      <button type="button" data-act="unkeep" data-index="${i}" aria-label="Remove ${esc(f.fileName)}">${icon('close', 's14')}</button></div>`).join('')
+    + pickedFiles.map((f, i) => `<div class="thumb" ${f.type.startsWith('image/') ? `style="background-image:url(${URL.createObjectURL(f)})"` : ''}>
     ${f.type.startsWith('image/') ? '' : esc(f.name.split('.').pop().toUpperCase())}
     <button type="button" data-act="unpick" data-index="${i}" aria-label="Remove">${icon('close', 's14')}</button></div>`).join('');
+
+  // Filed receipts show their picture once the phone has it.
+  for (const f of keptFiles.filter((x) => x.isImage)) {
+    store.getFile(f.hash).then((blob) => {
+      const el = box.querySelector(`[data-kept="${f.hash}"]`);
+      if (blob && el) {
+        el.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
+        el.querySelector('span').textContent = '';
+      }
+    }).catch(() => {});
+  }
 }
 
 async function submitExpense(form) {
@@ -552,8 +582,22 @@ async function submitExpense(form) {
     files.push({ hash, fileName: file.name || `Photo ${todayValue()}.jpg`, mediaType: file.type || 'application/octet-stream', size: file.size, isImage: file.type.startsWith('image/') });
   }
 
-  localStorage.setItem('et.lastGroup', form.group.value);
   const group = m().groups.get(form.group.value);
+  const editing = form.dataset.entry ? m().entryById.get(form.dataset.entry) : null;
+
+  if (editing) {
+    // An unchanged date keeps its time, so the entry does not jump around within its day.
+    const occurredOn = form.date.value === dateValue(editing.occurredOn) ? editing.occurredOn : dayToMs(form.date.value);
+    const kept = new Set(keptFiles.map((f) => f.id));
+    await save(updateExpense(m(), editing, {
+      groupId: group.id, title: form.title.value, amount, occurredOn,
+      payee: form.payee.value, note: form.note.value, tags: form.tags.value, files,
+      removeAttachments: attachmentsOf(editing.id).filter((a) => !kept.has(a.id)).map((a) => a.id),
+    }), `Saved ${form.title.value.trim()}.`);
+    return;
+  }
+
+  localStorage.setItem('et.lastGroup', form.group.value);
   await save(addExpense(m(), {
     groupId: group.id, title: form.title.value, amount, occurredOn: dayToMs(form.date.value),
     payee: form.payee.value, note: form.note.value, tags: form.tags.value, files,
@@ -634,7 +678,12 @@ async function openEntry(id) {
     ${e.tags.length ? `<div class="kv"><span>Tags</span><span class="tagline">${esc(e.tags.map((t) => `#${t}`).join(' '))}</span></div>` : ''}
     ${e.note ? `<p class="sec" style="white-space:pre-wrap">${esc(e.note)}</p>` : ''}
     <div data-role="files">${files.map((f) => `<div class="hint" data-hash="${f.hash}">${icon('clip', 's14')} ${esc(f.fileName)} · loading…</div>`).join('')}</div>
-    <div class="actions"><button class="btn" data-act="close">Close</button></div>`);
+    ${e.loanPaymentId
+      ? '<p class="hint">A loan repayment. It changes with its loan: open the loan to change or remove it.</p><div class="actions"><button class="btn" data-act="close">Close</button></div>'
+      : `<div class="actions">
+          <button class="btn danger" data-act="delete-entry" data-id="${e.id}">${icon('close')}Delete</button>
+          <button class="btn primary" data-act="edit-entry" data-id="${e.id}">${icon('pencil')}Edit</button>
+        </div>`}`);
 
   for (const f of files) {
     const slotEl = sheet.querySelector(`[data-hash="${f.hash}"]`);
@@ -686,6 +735,67 @@ function openPerson(id) {
     <div class="actions"><button class="btn" data-act="close">Close</button></div>`);
 }
 
+// ---------- Apple Pay shortcut ----------
+
+const CAPTURE_KEY = 'et.captureKey';
+
+function copyRow(label, value, act) {
+  return `<div class="field" style="margin-top:14px"><label>${esc(label)}</label>
+    <div style="display:flex;gap:8px">
+      <input class="input" readonly value="${esc(value)}" style="font-family:var(--mono);font-size:13px">
+      <button class="btn" data-act="${act}" style="flex:none">Copy</button>
+    </div></div>`;
+}
+
+function renderShortcut() {
+  let key = null;
+  try { key = localStorage.getItem(CAPTURE_KEY); } catch { /* private mode */ }
+  const step = (n, html) => `<li style="margin-bottom:12px">${html}</li>`;
+  const b = (t) => `<b>${esc(t)}</b>`;
+
+  frame('Apple Pay shortcut', `
+    <section class="card pad">
+      <p style="margin-top:0">Pay with Apple Pay, and a list of your groups pops up straight away. Tap one and the payment is filed there, with the shop as its name. It reaches the PC on its next sync.</p>
+      <p class="hint" style="margin-bottom:0">Only payments made with a card in Wallet trigger it. The usual group for a shop comes first.</p>
+    </section>
+
+    <div class="section"><span>1 · Your capture key</span></div>
+    <section class="card pad">
+      ${key
+        ? `${copyRow('Capture key', key, 'copy-key')}
+           <p class="hint">Like a password for this one job: it can add expenses and read your group names, nothing else. Making a new key stops the old one working.</p>
+           <button class="btn wide" data-act="new-key">${icon('refresh')}Make a new key</button>`
+        : `<p class="hint" style="margin-top:0">The shortcut uses it instead of your password.</p>
+           <button class="btn primary wide" data-act="new-key">${icon('key')}Make a capture key</button>`}
+      ${copyRow('Address', api.CAPTURE_URL, 'copy-url')}
+    </section>
+
+    <div class="section"><span>2 · Make the automation</span></div>
+    <section class="card pad"><ol style="margin:0;padding-left:20px;line-height:1.5">
+      ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Transaction')}. Pick your cards, choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
+      ${step(2, `Add ${b('Get Contents of URL')}. Paste the ${b('Address')}. Tap the arrow to show more: ${b('Method')} ${b('POST')}, ${b('Request Body')} ${b('JSON')}, and add three Text fields:
+        <br>${b('key')} = paste your capture key
+        <br>${b('amount')} = ${b('Shortcut Input')} → ${b('Amount')}
+        <br>${b('merchant')} = ${b('Shortcut Input')} → ${b('Merchant')}`)}
+      ${step(3, `Add ${b('Split Text')}, split ${b('Contents of URL')} by ${b('New Lines')}.`)}
+      ${step(4, `Add ${b('Choose from List')} on the split text. Set its prompt to "Which group?".`)}
+      ${step(5, `Add another ${b('Get Contents of URL')}, set up exactly like step 2, with two more Text fields:
+        <br>${b('choice')} = ${b('Chosen Item')}
+        <br>${b('card')} = ${b('Shortcut Input')} → ${b('Card or Pass')}`)}
+      ${step(6, `Add ${b('Show Notification')} with the ${b('Contents of URL')} from step 5. It says what was filed.`)}
+    </ol>
+    <p class="hint" style="margin-bottom:0">Dismissing the list files nothing. If a payment does not show up, the notification says why.</p></section>`, { back: '#/' });
+}
+
+async function copy(text, what) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${what} copied.`);
+  } catch {
+    toast(`Could not copy. Press and hold the ${what.toLowerCase()} to copy it.`, true);
+  }
+}
+
 function openAccount() {
   openSheet(`<h2>Sync</h2>
     <div class="subtitle">Signed in as ${esc(api.userEmail())}</div>
@@ -693,6 +803,11 @@ function openAccount() {
     <div class="kv"><span>Last sync</span><span>${esc(ago(state.lastSync))}</span></div>
     <div class="kv"><span>Waiting to be sent</span><span>${state.pending ? `${state.pending} changes` : 'Nothing'}</span></div>
     <p class="hint">It syncs when the app opens, after you add something, and every minute while it is open. The PC syncs on its own, too.</p>
+    <div class="card list" style="margin-top:14px">
+      <button class="row" data-go="#/shortcut"><span class="glyph">${icon('key')}</span>
+        <span class="main"><span class="title">Apple Pay shortcut</span><span class="sub">File a payment the moment you pay</span></span>
+        ${icon('chev', 'chev s14')}</button>
+    </div>
     <div class="actions">
       <button class="btn danger" data-act="signout">${icon('signout')}Sign out</button>
       <button class="btn primary" data-act="syncnow">${icon('refresh')}Sync now</button>
@@ -722,6 +837,29 @@ document.addEventListener('click', async (event) => {
     tosignin: () => renderSignIn(),
     syncnow: async () => { closeSheet(); await syncNow(); },
     unpick: () => { pickedFiles.splice(Number(el.dataset.index), 1); drawThumbs(el.closest('.sheet')); },
+    unkeep: () => { keptFiles.splice(Number(el.dataset.index), 1); drawThumbs(el.closest('.sheet')); },
+    'edit-entry': () => openExpense(null, el.dataset.id),
+    'copy-key': () => copy(localStorage.getItem(CAPTURE_KEY) ?? '', 'Capture key'),
+    'copy-url': () => copy(api.CAPTURE_URL, 'Address'),
+    'new-key': async () => {
+      let had = null;
+      try { had = localStorage.getItem(CAPTURE_KEY); } catch { /* private mode */ }
+      if (had && !confirm('Make a new key? The shortcut stops working until you paste the new one into it.')) return;
+      if (DEMO) return toast('Not in the demo.', true);
+      try {
+        const key = await api.createCaptureKey();
+        localStorage.setItem(CAPTURE_KEY, key);
+        render();
+        toast('Capture key made. Copy it into the shortcut.');
+      } catch (e) {
+        toast(`Could not make a key: ${e.message}`, true);
+      }
+    },
+    'delete-entry': async () => {
+      const entry = m().entryById.get(el.dataset.id);
+      if (!entry || !confirm(`Delete ${entry.title}? Its receipts go with it, on the PC too.`)) return;
+      await save(deleteExpense(m(), entry), `Deleted ${entry.title}.`);
+    },
     signout: async () => {
       if (state.pending && !confirm(`${state.pending} changes have not been sent yet and will be lost. Sign out anyway?`)) return;
       closeSheet();
