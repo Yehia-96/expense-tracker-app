@@ -1135,7 +1135,15 @@ setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet:
     state.lastSync = new Date().toISOString();
     return reload();
   }
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // A new version took over while the app was open: reload once so every file is the new one.
+    const hadWorker = Boolean(navigator.serviceWorker.controller);
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadWorker && !reloaded) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+  }
 
   // Arriving from a password reset email: signed in by the link, now choose the password.
   const recovery = api.acceptRecoveryLink(location.hash);
