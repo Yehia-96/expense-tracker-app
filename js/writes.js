@@ -201,12 +201,14 @@ export function addRepayment(model, { loan, amount, paidOn, note }) {
 
 const itemRow = (item, changes) => ({ tbl: 'ShoppingItems', id: item.id, data: { ...item.raw, ...changes } });
 
-export function addShoppingItem(model, { name, byWeight }) {
+/** Adds an item to one list: `currency` 0 is the euro list (Germany), 1 the pound one (Egypt). */
+export function addShoppingItem(model, { name, byWeight, currency = 0 }) {
   const id = newId();
-  const last = Math.max(-1, ...model.shopping.items.map((i) => i.position));
+  const last = Math.max(-1, ...model.shopping.items.filter((i) => i.currency === currency).map((i) => i.position));
   return [{
     tbl: 'ShoppingItems', id, data: {
-      Id: id, Name: name.trim(), ByWeight: byWeight ? 1 : 0, Position: last + 1, CurrentPurchaseId: null, CreatedAt: Date.now(),
+      Id: id, Name: name.trim(), ByWeight: byWeight ? 1 : 0, Currency: currency, Position: last + 1,
+      CurrentPurchaseId: null, CreatedAt: Date.now(),
     },
   }];
 }
@@ -224,12 +226,13 @@ export function deleteShoppingItem(item) {
 }
 
 /** Puts an item in the basket at a price; grams only for things sold by weight. */
-export function buyShoppingItem(item, { price, currency, grams, note }) {
+/** Puts an item in the basket at a price, in its list's currency. */
+export function buyShoppingItem(item, { price, grams, note }) {
   const id = newId();
   return [
     {
       tbl: 'ShoppingPurchases', id, data: {
-        Id: id, ItemId: item.id, Price: toCents(price), Currency: currency,
+        Id: id, ItemId: item.id, Price: toCents(price), Currency: item.currency,
         Grams: item.byWeight && Number(grams) > 0 ? Math.round(Number(grams)) : null,
         Note: note?.trim() ? note.trim() : null, BoughtAt: Date.now(),
       },
@@ -247,8 +250,9 @@ export function unbuyShoppingItem(item) {
 }
 
 /** Empties the basket for the next trip. What was paid stays, as each item's last price. */
-export function startNextTrip(model) {
-  return model.shopping.items.filter((i) => i.current).map((i) => itemRow(i, { CurrentPurchaseId: null }));
+export function startNextTrip(model, currency) {
+  return model.shopping.items.filter((i) => i.current && i.currency === currency)
+    .map((i) => itemRow(i, { CurrentPurchaseId: null }));
 }
 
 /** SHA-256 of a file as lower-case hex: its name in the store, on the phone and the PC alike. */

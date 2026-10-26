@@ -115,6 +115,9 @@ function shoppingList(rows) {
     const current = history.find((p) => p.id === d.CurrentPurchaseId) ?? null;
     return {
       id: d.Id, name: d.Name, byWeight: bool(d.ByWeight), position: Number(d.Position ?? 0),
+      // Which list: the euro one (Germany) or the pound one (Egypt). Items from before there
+      // were two lists have no currency and belong to the euro one.
+      currency: d.Currency === null || d.Currency === undefined ? Currency.EUR : Number(d.Currency),
       current, last: history.find((p) => p !== current) ?? null, history, raw: d,
     };
   }).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));

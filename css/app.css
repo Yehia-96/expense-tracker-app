@@ -186,7 +186,7 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .weigh { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .weigh input { width: 18px; height: 18px; accent-color: var(--accent); }
 .seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 19px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); }
-.seg button { border: 1px solid var(--surface-sunken); background: var(--surface-sunken); color: var(--text-secondary); height: 30px; min-width: 40px; border-radius: 15px; font-weight: 500; }
+.seg button { border: 1px solid var(--surface-sunken); background: var(--surface-sunken); color: var(--text-secondary); height: 30px; min-width: 40px; padding: 0 10px; border-radius: 15px; font-weight: 500; font-size: 13px; white-space: nowrap; }
 .seg button.on { background: var(--surface-active); border-color: var(--border-default); color: var(--text-primary); }
 
 /* ---------- Sign in ---------- */

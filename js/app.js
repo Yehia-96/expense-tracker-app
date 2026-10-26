@@ -754,17 +754,22 @@ function openPerson(id) {
 
 const SHOP_CURRENCY = 'et.shopCurrency';
 
-/** The currency prices are typed in: the one used last on this phone. */
+const LIST_NAME = ['Germany', 'Egypt'];
+
+/** Which list is open: the euro one (Germany) or the pound one (Egypt), as last left. */
 function shopCurrency() {
   try { return Number(localStorage.getItem(SHOP_CURRENCY) ?? 0) || 0; } catch { return 0; }
 }
 
-/** "3 of 12 in the basket, €18.40" for the home screen. */
+/** "Germany: 3 of 12 in the basket · Egypt: 8 items" for the home screen. */
 function shoppingSummary() {
-  const { items } = m().shopping;
-  if (!items.length) return 'The things you buy each time';
-  const inBasket = items.filter((i) => i.current);
-  return inBasket.length ? `${inBasket.length} of ${items.length} in the basket, ${basketTotal(inBasket)}` : `${items.length} items`;
+  const lists = [0, 1].map((c) => {
+    const items = m().shopping.items.filter((i) => i.currency === c);
+    if (!items.length) return null;
+    const inBasket = items.filter((i) => i.current);
+    return `${LIST_NAME[c]}: ${inBasket.length ? `${inBasket.length} of ${items.length} in the basket` : `${items.length} items`}`;
+  }).filter(Boolean);
+  return lists.length ? lists.join(' · ') : 'One list for Germany, one for Egypt';
 }
 
 function basketTotal(inBasket) {
@@ -799,20 +804,21 @@ function shoppingRow(item) {
 }
 
 function renderShopping() {
-  const { items } = m().shopping;
+  const currency = shopCurrency();
+  const items = m().shopping.items.filter((i) => i.currency === currency);
   const toBuy = items.filter((i) => !i.current);
   const inBasket = items.filter((i) => i.current);
-  const currency = shopCurrency();
 
-  frame('Shopping list', `
+  frame(`Shopping · ${LIST_NAME[currency]}`, `
     <section class="card pad">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
         <div>
           <div class="sec" style="font-size:13px">In the basket${items.length ? `, ${inBasket.length} of ${items.length}` : ''}</div>
           <div class="amt mid">${esc(basketTotal(inBasket))}</div>
         </div>
-        <div class="seg" role="group" aria-label="Prices in">
-          ${[0, 1].map((c) => `<button class="${c === currency ? 'on' : ''}" data-act="shop-currency" data-currency="${c}">${SYMBOL[c]}</button>`).join('')}
+        <div class="seg" role="group" aria-label="Which list">
+          ${[0, 1].map((c) => `<button class="${c === currency ? 'on' : ''}" data-act="shop-currency" data-currency="${c}"
+            aria-label="${LIST_NAME[c]} list">${LIST_NAME[c]} ${SYMBOL[c]}</button>`).join('')}
         </div>
       </div>
     </section>
@@ -829,14 +835,14 @@ function renderShopping() {
       <div class="card list">${inBasket.map(shoppingRow).join('')}</div>
       <button class="btn wide" style="margin-top:14px" data-act="shop-next">${icon('refresh')}Start the next trip</button>
       <p class="hint" style="margin:8px 4px 0">Empties the basket. Each item keeps what you paid, to show next time.</p>` : ''}
-    ${items.length ? '' : '<div class="empty">Add the things you usually buy. Tick "By weight" for fruit, vegetables, cheese: those ask for grams too, and show the price per kg.</div>'}
+    ${items.length ? '' : `<div class="empty">Add the things you usually buy in ${LIST_NAME[currency]}, priced in ${SYMBOL[currency]}. Tick "By weight" for fruit, vegetables, cheese: those ask for grams too, and show the price per kg.</div>`}
   `, { back: '#/' });
 }
 
 function openBuy(id) {
   const item = m().shopping.items.find((i) => i.id === id);
   if (!item) return;
-  const currency = shopCurrency();
+  const currency = item.currency;
   const sheet = openSheet(`<form data-form="shop-buy" data-id="${item.id}">
     <h2>${esc(item.name)}</h2>
     <div class="subtitle">${item.last ? `Last time ${esc(purchaseLine(item.last))}` : 'Into the basket'}</div>
@@ -872,7 +878,7 @@ async function submitBuy(form) {
   if (!(price >= 0) || form.price.value.trim() === '') return sheetProblem(form, 'Type what it cost.');
   const grams = form.grams ? Number(form.grams.value) : null;
   if (form.grams && form.grams.value.trim() && !(grams > 0)) return sheetProblem(form, 'The weight has to be a number of grams.');
-  await save(buyShoppingItem(item, { price, currency: shopCurrency(), grams, note: form.note.value }),
+  await save(buyShoppingItem(item, { price, grams, note: form.note.value }),
     `${item.name} is in the basket.`);
 }
 
@@ -1005,7 +1011,7 @@ document.addEventListener('click', async (event) => {
     },
     'shop-next': async () => {
       if (!confirm('Start the next trip? The basket empties; what you paid is kept as each item\'s last price.')) return;
-      await save(startNextTrip(m()), 'Ready for the next trip.');
+      await save(startNextTrip(m(), shopCurrency()), `Ready for the next trip in ${LIST_NAME[shopCurrency()]}.`);
     },
     'shop-delete': async () => {
       const item = m().shopping.items.find((i) => i.id === el.dataset.id);
@@ -1094,7 +1100,8 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'shop-add') {
       const name = form.name.value.trim();
       if (!name) return;
-      await save(addShoppingItem(m(), { name, byWeight: form.byWeight.checked }), `Added ${name}.`);
+      await save(addShoppingItem(m(), { name, byWeight: form.byWeight.checked, currency: shopCurrency() }),
+        `Added ${name} to the ${LIST_NAME[shopCurrency()]} list.`);
       document.querySelector('form[data-form=shop-add] input[name=name]')?.focus();
       return;
     }
