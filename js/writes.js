@@ -197,6 +197,60 @@ export function addRepayment(model, { loan, amount, paidOn, note }) {
   return changes;
 }
 
+// ---------- Shopping list (phone only; the desktop skips these tables) ----------
+
+const itemRow = (item, changes) => ({ tbl: 'ShoppingItems', id: item.id, data: { ...item.raw, ...changes } });
+
+export function addShoppingItem(model, { name, byWeight }) {
+  const id = newId();
+  const last = Math.max(-1, ...model.shopping.items.map((i) => i.position));
+  return [{
+    tbl: 'ShoppingItems', id, data: {
+      Id: id, Name: name.trim(), ByWeight: byWeight ? 1 : 0, Position: last + 1, CurrentPurchaseId: null, CreatedAt: Date.now(),
+    },
+  }];
+}
+
+export function updateShoppingItem(item, { name, byWeight }) {
+  return [itemRow(item, { Name: name.trim(), ByWeight: byWeight ? 1 : 0 })];
+}
+
+/** Takes an item off the list, with what it cost before. */
+export function deleteShoppingItem(item) {
+  return [
+    { tbl: 'ShoppingItems', id: item.id, data: null },
+    ...item.history.map((p) => ({ tbl: 'ShoppingPurchases', id: p.id, data: null })),
+  ];
+}
+
+/** Puts an item in the basket at a price; grams only for things sold by weight. */
+export function buyShoppingItem(item, { price, currency, grams, note }) {
+  const id = newId();
+  return [
+    {
+      tbl: 'ShoppingPurchases', id, data: {
+        Id: id, ItemId: item.id, Price: toCents(price), Currency: currency,
+        Grams: item.byWeight && Number(grams) > 0 ? Math.round(Number(grams)) : null,
+        Note: note?.trim() ? note.trim() : null, BoughtAt: Date.now(),
+      },
+    },
+    itemRow(item, { CurrentPurchaseId: id }),
+  ];
+}
+
+/** Takes an item back out of the basket: the price goes, as if it was never bought. */
+export function unbuyShoppingItem(item) {
+  return [
+    ...(item.current ? [{ tbl: 'ShoppingPurchases', id: item.current.id, data: null }] : []),
+    itemRow(item, { CurrentPurchaseId: null }),
+  ];
+}
+
+/** Empties the basket for the next trip. What was paid stays, as each item's last price. */
+export function startNextTrip(model) {
+  return model.shopping.items.filter((i) => i.current).map((i) => itemRow(i, { CurrentPurchaseId: null }));
+}
+
 /** SHA-256 of a file as lower-case hex: its name in the store, on the phone and the PC alike. */
 export async function hashOf(blob) {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());

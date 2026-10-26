@@ -173,6 +173,22 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: calc(var(--safe-bottom) + 90px); z-index: 30; background: var(--surface-overlay); border: 1px solid var(--border-default); border-radius: var(--radius-m); padding: 12px 14px; box-shadow: var(--shadow); font-size: 14px; animation: rise .2s ease-out; }
 .toast.bad { color: var(--negative); }
 
+/* ---------- Shopping list ---------- */
+.btn.small { height: 34px; padding: 0 12px; font-size: 14px; flex: none; }
+.row.shop .main.bare { border: 0; background: none; text-align: left; padding: 0; }
+.row.shop.done .title { color: var(--text-secondary); }
+.tick { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border-strong); flex: none; display: flex; align-items: center; justify-content: center; }
+.row.shop.done .tick { background: var(--positive); border-color: var(--positive); color: var(--text-on-accent); }
+.row.shop.done .tick svg.i { stroke-width: 2.6; }
+.addrow { display: flex; gap: 8px; align-items: center; padding: 10px; }
+.addrow .input { flex: 1; min-width: 0; }
+.addrow .btn { width: 46px; padding: 0; flex: none; }
+.weigh { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.weigh input { width: 18px; height: 18px; accent-color: var(--accent); }
+.seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 19px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); }
+.seg button { border: 1px solid var(--surface-sunken); background: var(--surface-sunken); color: var(--text-secondary); height: 30px; min-width: 40px; border-radius: 15px; font-weight: 500; }
+.seg button.on { background: var(--surface-active); border-color: var(--border-default); color: var(--text-primary); }
+
 /* ---------- Sign in ---------- */
 .signin { min-height: 100%; display: flex; flex-direction: column; justify-content: center; padding: calc(var(--safe-top) + 24px) 24px calc(var(--safe-bottom) + 24px); max-width: 440px; margin: 0 auto; }
 .brand { width: 56px; height: 56px; border-radius: 14px; background: var(--accent); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }

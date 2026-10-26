@@ -94,9 +94,37 @@ export function buildModel(rows) {
 
   return {
     projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments,
-    rawTags: tagRows, entryTagRows,
+    rawTags: tagRows, entryTagRows, shopping: shoppingList(rows),
   };
 }
+
+/**
+ * The shopping list (phone only: the desktop has no such tables and skips these rows when it
+ * syncs). Each item knows what is in the basket now and what it cost the times before.
+ */
+function shoppingList(rows) {
+  const purchases = rows.filter((r) => r.tbl === 'ShoppingPurchases' && r.data).map((r) => ({
+    id: r.data.Id, itemId: r.data.ItemId, price: Number(r.data.Price), currency: Number(r.data.Currency),
+    grams: r.data.Grams === null || r.data.Grams === undefined ? null : Number(r.data.Grams),
+    note: r.data.Note, boughtAt: Number(r.data.BoughtAt), raw: r.data,
+  }));
+
+  const items = rows.filter((r) => r.tbl === 'ShoppingItems' && r.data).map((r) => {
+    const d = r.data;
+    const history = purchases.filter((p) => p.itemId === d.Id).sort((a, b) => b.boughtAt - a.boughtAt);
+    const current = history.find((p) => p.id === d.CurrentPurchaseId) ?? null;
+    return {
+      id: d.Id, name: d.Name, byWeight: bool(d.ByWeight), position: Number(d.Position ?? 0),
+      current, last: history.find((p) => p !== current) ?? null, history, raw: d,
+    };
+  }).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+  return { items, purchases };
+}
+
+/** Cents per kilogram, for things sold by weight. */
+export const perKg = (purchase) =>
+  purchase?.grams > 0 ? Math.round((purchase.price * 1000) / purchase.grams) : null;
 
 const currencyOf = (entry) => entry?.group?.project?.currency ?? null;
 

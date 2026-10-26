@@ -3,10 +3,13 @@
 import * as api from './api.js';
 import * as store from './store.js';
 import {
-  buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled,
+  buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled, perKg,
   Currencies, GroupKind, Direction, Period,
 } from './calc.js';
-import { addExpense, addMoneyIn, addRepayment, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP } from './writes.js';
+import {
+  addExpense, addMoneyIn, addRepayment, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
+} from './writes.js';
 
 const app = document.getElementById('app');
 const state = { model: null, syncing: false, syncError: null, lastSync: null, pending: 0, sheet: null };
@@ -31,6 +34,8 @@ const ICONS = {
   signout: 'M15 4h4v16h-4M10 17l5-5-5-5M15 12H3', brand: 'M7 8h10M7 12h10M7 16h6', camera: 'M4 7h3l2-2h6l2 2h3v12H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   money: 'M12 15V4M8 8l4-4 4 4M4 15v5h16v-5',
   pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+  cart: 'M3 4h2.5l2.2 10.5h10.6L20.5 7H6.6M9.5 19a1 1 0 1 0 0 .01M17 19a1 1 0 1 0 0 .01',
+  scale: 'M12 4v16M5 8h14M5 8l-3 7a3 3 0 0 0 6 0zM19 8l-3 7a3 3 0 0 0 6 0zM8 20h8',
   key: 'M14 10a4 4 0 1 0-3.5 4L4 20.5V23h3v-2h2v-2h2l1.5-1.5A4 4 0 0 0 14 10zM15.5 8.5h.01',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
@@ -208,6 +213,7 @@ function render() {
   if (r.kind === 'g' && m().groups.has(r.id)) return renderGroup(m().groups.get(r.id));
   if (r.kind === 'people') return renderPeople();
   if (r.kind === 'shortcut') return renderShortcut();
+  if (r.kind === 'shopping') return renderShopping();
   return renderHome();
 }
 
@@ -284,6 +290,15 @@ function renderHome() {
         <span class="main"><span class="title">${esc(p.name)}</span><span class="sub">${groupsOf(p.id).length} groups</span></span>
         <span class="code">${CODE[p.currency]}</span>${icon('chev', 'chev s14')}
       </button>`).join('') || '<div class="empty">No projects yet. Make one on your PC.</div>'}
+    </div>
+    <div class="section"><span>Shopping</span></div>
+    <div class="card list">
+      <button class="row" data-go="#/shopping">
+        <span class="glyph">${icon('cart')}</span>
+        <span class="main"><span class="title">Shopping list</span>
+          <span class="sub">${esc(shoppingSummary())}</span></span>
+        ${icon('chev', 'chev s14')}
+      </button>
     </div>
     <div class="section"><span>Loans</span></div>
     <div class="card list">
@@ -735,6 +750,149 @@ function openPerson(id) {
     <div class="actions"><button class="btn" data-act="close">Close</button></div>`);
 }
 
+// ---------- Shopping list ----------
+
+const SHOP_CURRENCY = 'et.shopCurrency';
+
+/** The currency prices are typed in: the one used last on this phone. */
+function shopCurrency() {
+  try { return Number(localStorage.getItem(SHOP_CURRENCY) ?? 0) || 0; } catch { return 0; }
+}
+
+/** "3 of 12 in the basket, €18.40" for the home screen. */
+function shoppingSummary() {
+  const { items } = m().shopping;
+  if (!items.length) return 'The things you buy each time';
+  const inBasket = items.filter((i) => i.current);
+  return inBasket.length ? `${inBasket.length} of ${items.length} in the basket, ${basketTotal(inBasket)}` : `${items.length} items`;
+}
+
+function basketTotal(inBasket) {
+  const sums = new Map();
+  for (const i of inBasket) sums.set(i.current.currency, (sums.get(i.current.currency) ?? 0) + i.current.price);
+  return [...sums].map(([c, cents]) => money(cents, c)).join(' + ') || money(0, shopCurrency());
+}
+
+/** "€2.49 · 500 g · €4.98/kg", for what is in the basket or was paid last time. */
+function purchaseLine(p) {
+  if (!p) return '';
+  const kg = perKg(p);
+  return [money(p.price, p.currency), p.grams ? `${p.grams} g` : null, kg ? `${money(kg, p.currency)}/kg` : null]
+    .filter(Boolean).join(' · ');
+}
+
+function shoppingRow(item) {
+  const inBasket = !!item.current;
+  const sub = inBasket
+    ? `${purchaseLine(item.current)}${item.current.note ? ` · ${item.current.note}` : ''}`
+    : item.last ? `Last time ${purchaseLine(item.last)}` : (item.byWeight ? 'Sold by weight' : '');
+  return `<div class="row shop ${inBasket ? 'done' : ''}">
+    <span class="tick">${inBasket ? icon('check', 's14') : ''}</span>
+    <button class="main bare" data-act="shop-item" data-id="${item.id}">
+      <span class="title">${esc(item.name)}${item.byWeight ? ` ${icon('scale', 's14 muted')}` : ''}</span>
+      ${sub ? `<span class="sub">${esc(sub)}</span>` : ''}
+    </button>
+    ${inBasket
+      ? `<button class="btn small" data-act="shop-undo" data-id="${item.id}">Undo</button>`
+      : `<button class="btn small primary" data-act="shop-buy" data-id="${item.id}">Bought</button>`}
+  </div>`;
+}
+
+function renderShopping() {
+  const { items } = m().shopping;
+  const toBuy = items.filter((i) => !i.current);
+  const inBasket = items.filter((i) => i.current);
+  const currency = shopCurrency();
+
+  frame('Shopping list', `
+    <section class="card pad">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div>
+          <div class="sec" style="font-size:13px">In the basket${items.length ? `, ${inBasket.length} of ${items.length}` : ''}</div>
+          <div class="amt mid">${esc(basketTotal(inBasket))}</div>
+        </div>
+        <div class="seg" role="group" aria-label="Prices in">
+          ${[0, 1].map((c) => `<button class="${c === currency ? 'on' : ''}" data-act="shop-currency" data-currency="${c}">${SYMBOL[c]}</button>`).join('')}
+        </div>
+      </div>
+    </section>
+
+    <form class="card pad addrow" data-form="shop-add" style="margin-top:12px">
+      <input class="input" name="name" placeholder="Add an item" autocomplete="off" required>
+      <label class="weigh"><input type="checkbox" name="byWeight"> By weight</label>
+      <button class="btn primary" type="submit" aria-label="Add">${icon('plus')}</button>
+    </form>
+
+    ${toBuy.length ? `<div class="section"><span>To buy</span><span>${toBuy.length}</span></div>
+      <div class="card list">${toBuy.map(shoppingRow).join('')}</div>` : ''}
+    ${inBasket.length ? `<div class="section"><span>In the basket</span><span>${inBasket.length}</span></div>
+      <div class="card list">${inBasket.map(shoppingRow).join('')}</div>
+      <button class="btn wide" style="margin-top:14px" data-act="shop-next">${icon('refresh')}Start the next trip</button>
+      <p class="hint" style="margin:8px 4px 0">Empties the basket. Each item keeps what you paid, to show next time.</p>` : ''}
+    ${items.length ? '' : '<div class="empty">Add the things you usually buy. Tick "By weight" for fruit, vegetables, cheese: those ask for grams too, and show the price per kg.</div>'}
+  `, { back: '#/' });
+}
+
+function openBuy(id) {
+  const item = m().shopping.items.find((i) => i.id === id);
+  if (!item) return;
+  const currency = shopCurrency();
+  const sheet = openSheet(`<form data-form="shop-buy" data-id="${item.id}">
+    <h2>${esc(item.name)}</h2>
+    <div class="subtitle">${item.last ? `Last time ${esc(purchaseLine(item.last))}` : 'Into the basket'}</div>
+    <div class="${item.byWeight ? 'two' : ''}">
+      <div class="field"><label>Price (${SYMBOL[currency]})</label>
+        <input class="input amount" name="price" inputmode="decimal" required placeholder="${item.last ? (item.last.price / 100).toFixed(2) : '0.00'}"></div>
+      ${item.byWeight ? `<div class="field"><label>Weight (grams)</label>
+        <input class="input amount" name="grams" inputmode="numeric" placeholder="${item.last?.grams ?? 500}"></div>` : ''}
+    </div>
+    ${item.byWeight ? '<p class="hint" data-role="perkg" style="margin-top:-6px">&nbsp;</p>' : ''}
+    <div class="field"><label>Note <span class="opt">(optional)</span></label>
+      <input class="input" name="note" autocomplete="off" placeholder="${item.byWeight ? 'Loose, on offer, organic…' : 'Brand, size, on offer…'}"></div>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">In the basket</button></div>
+  </form>`);
+
+  const form = sheet.querySelector('form');
+  if (item.byWeight) {
+    const show = () => {
+      const price = Math.round(parseAmount(form.price.value) * 100);
+      const grams = Number(form.grams.value);
+      sheet.querySelector('[data-role=perkg]').textContent =
+        price > 0 && grams > 0 ? `${money(Math.round((price * 1000) / grams), currency)} per kg` : '\u00a0';
+    };
+    form.price.addEventListener('input', show);
+    form.grams.addEventListener('input', show);
+  }
+  form.price.focus();
+}
+
+async function submitBuy(form) {
+  const item = m().shopping.items.find((i) => i.id === form.dataset.id);
+  const price = parseAmount(form.price.value);
+  if (!(price >= 0) || form.price.value.trim() === '') return sheetProblem(form, 'Type what it cost.');
+  const grams = form.grams ? Number(form.grams.value) : null;
+  if (form.grams && form.grams.value.trim() && !(grams > 0)) return sheetProblem(form, 'The weight has to be a number of grams.');
+  await save(buyShoppingItem(item, { price, currency: shopCurrency(), grams, note: form.note.value }),
+    `${item.name} is in the basket.`);
+}
+
+function openShoppingItem(id) {
+  const item = m().shopping.items.find((i) => i.id === id);
+  if (!item) return;
+  openSheet(`<form data-form="shop-edit" data-id="${item.id}">
+    <h2>${esc(item.name)}</h2><div class="subtitle">${item.history.length === 1 ? 'Bought once' : `Bought ${item.history.length} times`}</div>
+    <div class="field"><label>Name</label><input class="input" name="name" required value="${esc(item.name)}"></div>
+    <label class="weigh" style="margin-bottom:14px"><input type="checkbox" name="byWeight" ${item.byWeight ? 'checked' : ''}> Sold by weight: ask for grams, show price per kg</label>
+    ${item.history.length ? `<div class="flabel">What it cost</div><div class="card list">${item.history.map((p) => `
+      <div class="row"><span class="main"><span class="title">${esc(purchaseLine(p))}</span>
+        <span class="sub">${dateFmt.format(new Date(p.boughtAt))}${p.note ? ` · ${esc(p.note)}` : ''}</span></span></div>`).join('')}</div>` : ''}
+    <div class="actions">
+      <button type="button" class="btn danger" data-act="shop-delete" data-id="${item.id}">${icon('close')}Remove</button>
+      <button class="btn primary" type="submit">Save</button>
+    </div>
+  </form>`);
+}
+
 // ---------- Apple Pay shortcut ----------
 
 const CAPTURE_KEY = 'et.captureKey';
@@ -839,6 +997,26 @@ document.addEventListener('click', async (event) => {
     unpick: () => { pickedFiles.splice(Number(el.dataset.index), 1); drawThumbs(el.closest('.sheet')); },
     unkeep: () => { keptFiles.splice(Number(el.dataset.index), 1); drawThumbs(el.closest('.sheet')); },
     'edit-entry': () => openExpense(null, el.dataset.id),
+    'shop-buy': () => openBuy(el.dataset.id),
+    'shop-item': () => openShoppingItem(el.dataset.id),
+    'shop-undo': async () => {
+      const item = m().shopping.items.find((i) => i.id === el.dataset.id);
+      if (item) await save(unbuyShoppingItem(item), `${item.name} is back on the list.`);
+    },
+    'shop-next': async () => {
+      if (!confirm('Start the next trip? The basket empties; what you paid is kept as each item\'s last price.')) return;
+      await save(startNextTrip(m()), 'Ready for the next trip.');
+    },
+    'shop-delete': async () => {
+      const item = m().shopping.items.find((i) => i.id === el.dataset.id);
+      if (item && confirm(`Remove ${item.name} from the list, with its price history?`)) {
+        await save(deleteShoppingItem(item), `Removed ${item.name}.`);
+      }
+    },
+    'shop-currency': () => {
+      try { localStorage.setItem(SHOP_CURRENCY, el.dataset.currency); } catch { /* private mode */ }
+      render();
+    },
     'copy-key': () => copy(localStorage.getItem(CAPTURE_KEY) ?? '', 'Capture key'),
     'copy-url': () => copy(api.CAPTURE_URL, 'Address'),
     'new-key': async () => {
@@ -911,6 +1089,20 @@ document.addEventListener('submit', async (event) => {
       await reload();
       toast('Password changed. You are signed in.');
       syncNow({ quiet: true });
+      return;
+    }
+    if (form.dataset.form === 'shop-add') {
+      const name = form.name.value.trim();
+      if (!name) return;
+      await save(addShoppingItem(m(), { name, byWeight: form.byWeight.checked }), `Added ${name}.`);
+      document.querySelector('form[data-form=shop-add] input[name=name]')?.focus();
+      return;
+    }
+    if (form.dataset.form === 'shop-buy') return await submitBuy(form);
+    if (form.dataset.form === 'shop-edit') {
+      const item = m().shopping.items.find((i) => i.id === form.dataset.id);
+      if (!form.name.value.trim()) return sheetProblem(form, 'Give it a name.');
+      await save(updateShoppingItem(item, { name: form.name.value, byWeight: form.byWeight.checked }), 'Saved.');
       return;
     }
     if (form.dataset.form === 'expense') await submitExpense(form);
