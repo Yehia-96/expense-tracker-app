@@ -5,6 +5,14 @@
 
 export const Currency = Object.freeze({ EUR: 0, EGP: 1 });
 export const Currencies = [Currency.EUR, Currency.EGP];
+export const SYMBOL = ['€', 'E£'];
+
+/** "€1,240.50", "−E£800.00": the desktop's CurrencyInfo.Format. */
+export function money(cents, currency) {
+  const sign = cents < 0 ? '−' : '';
+  const text = (Math.abs(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${sign}${SYMBOL[currency] ?? ''}${text}`;
+}
 export const GroupKind = Object.freeze({ Expense: 0, Loan: 1, Conversion: 2 });
 export const Direction = Object.freeze({ Borrowed: 0, Lent: 1 });
 export const Period = Object.freeze({ Total: 0, Week: 1, Month: 2, Year: 3 });
@@ -41,7 +49,7 @@ export function buildModel(rows) {
     id: g.Id, projectId: g.ProjectId, project: projects.get(g.ProjectId) ?? null, name: g.Name,
     kind: Number(g.Kind), colorHex: g.ColorHex, budget: cents(g.Budget), period: Number(g.BudgetPeriod ?? 0),
     subBudget: cents(g.SubBudget), subPeriod: Number(g.SubBudgetPeriod ?? 0),
-    sortOrder: Number(g.SortOrder ?? 0), archived: bool(g.IsArchived),
+    sortOrder: Number(g.SortOrder ?? 0), archived: bool(g.IsArchived), raw: g,
   }]));
 
   const people = new Map(by('People').map((p) => [p.Id, { id: p.Id, name: p.Name, note: p.Note }]));
@@ -63,7 +71,7 @@ export function buildModel(rows) {
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const payments = by('LoanPayments').map((p) => ({
     id: p.Id, loanId: p.LoanEntryId, loan: entryById.get(p.LoanEntryId) ?? null,
-    amount: cents(p.Amount), paidOn: ticksToMs(p.PaidOn), note: p.Note,
+    amount: cents(p.Amount), paidOn: ticksToMs(p.PaidOn), note: p.Note, raw: p,
   }));
   for (const p of payments) p.loan?.payments.push(p);
 
@@ -85,7 +93,7 @@ export function buildModel(rows) {
 
   const transactions = by('CashTransactions').map((t) => ({
     id: t.Id, currency: Number(t.Currency), amount: cents(t.Amount), description: t.Description,
-    occurredOn: ticksToMs(t.OccurredOn), createdAt: ticksToMs(t.CreatedAt), kind: Number(t.Kind),
+    occurredOn: ticksToMs(t.OccurredOn), createdAt: ticksToMs(t.CreatedAt), kind: Number(t.Kind), raw: t,
   }));
 
   const expenses = entries.filter((e) => e.type === 'Expense');
@@ -94,7 +102,7 @@ export function buildModel(rows) {
 
   return {
     projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments,
-    rawTags: tagRows, entryTagRows, shopping: shoppingList(rows),
+    rawTags: tagRows, entryTagRows, shopping: shoppingList(rows), salary: salaryModel(rows),
   };
 }
 
@@ -123,6 +131,51 @@ function shoppingList(rows) {
   }).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
   return { items, purchases };
+}
+
+// ---------- Salary (phone only; each payment also files money in, which the desktop sees) ----------
+
+/** "2026-10": the month a salary is for, by the phone's own calendar. */
+export function monthKey(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function salaryModel(rows) {
+  const payments = rows.filter((r) => r.tbl === 'SalaryPayments' && r.data).map((r) => ({
+    id: r.data.Id, jobId: r.data.JobId, month: r.data.Month, amount: Number(r.data.Amount),
+    hours: r.data.Hours === null || r.data.Hours === undefined ? null : Number(r.data.Hours),
+    cashId: r.data.CashTransactionId, paidOn: Number(r.data.PaidOn), raw: r.data,
+  }));
+
+  const jobs = rows.filter((r) => r.tbl === 'SalaryJobs' && r.data).map((r) => {
+    const d = r.data;
+    return {
+      id: d.Id, name: d.Name, currency: Number(d.Currency ?? Currency.EUR), payday: Number(d.Payday ?? 1),
+      tracksHours: bool(d.TracksHours), position: Number(d.Position ?? 0), raw: d,
+      payments: payments.filter((p) => p.jobId === d.Id).sort((a, b) => b.month.localeCompare(a.month)),
+    };
+  }).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+  return { jobs, payments };
+}
+
+/** The jobs whose payday this month has come and that have no salary filed for it yet. */
+export function salaryDue(model, now = Date.now()) {
+  const d = new Date(now);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const month = monthKey(now);
+  return model.salary.jobs.filter((j) => d.getDate() >= Math.min(j.payday, lastDay) && !j.payments.some((p) => p.month === month));
+}
+
+/** The salary before `month`: what a new one is compared with. */
+export const previousSalary = (job, month) => job.payments.find((p) => p.month < month) ?? null;
+
+/** How a salary compares with the one before: { diff, percent }, or null the first month. */
+export function salaryChange(previous, amount) {
+  if (!previous) return null;
+  const diff = amount - previous.amount;
+  return { diff, percent: previous.amount ? (diff / previous.amount) * 100 : null };
 }
 
 /** Cents per kilogram, for things sold by weight. */

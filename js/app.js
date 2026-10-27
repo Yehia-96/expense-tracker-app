@@ -4,10 +4,11 @@ import * as api from './api.js';
 import * as store from './store.js';
 import {
   buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled, perKg,
-  Currencies, GroupKind, Direction, Period,
+  Currencies, GroupKind, Direction, Period, SYMBOL, money, monthKey, salaryDue, previousSalary, salaryChange,
 } from './calc.js';
 import {
-  addExpense, addMoneyIn, addRepayment, addLoan, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
+  addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -41,16 +42,8 @@ const ICONS = {
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const SYMBOL = ['€', 'E£'];
 const CODE = ['EUR', 'EGP'];
 const CASH_NAME = ['euro', 'pound'];
-
-/** "€1,240.50", "−E£800.00": the desktop's CurrencyInfo.Format. */
-function money(cents, currency) {
-  const sign = cents < 0 ? '−' : '';
-  const text = (Math.abs(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${sign}${SYMBOL[currency] ?? ''}${text}`;
-}
 
 /** The amount with its decimals faded, as on the desktop's large figures. */
 function moneyHtml(cents, currency, cls = '') {
@@ -214,6 +207,7 @@ function render() {
   if (r.kind === 'people') return renderPeople();
   if (r.kind === 'shortcut') return renderShortcut();
   if (r.kind === 'shopping') return renderShopping();
+  if (r.kind === 'salary') return renderSalary();
   return renderHome();
 }
 
@@ -297,6 +291,15 @@ function renderHome() {
         <span class="glyph">${icon('cart')}</span>
         <span class="main"><span class="title">Shopping list</span>
           <span class="sub">${esc(shoppingSummary())}</span></span>
+        ${icon('chev', 'chev s14')}
+      </button>
+    </div>
+    <div class="section"><span>Income</span></div>
+    <div class="card list">
+      <button class="row" data-go="#/salary">
+        <span class="glyph">${icon('money')}</span>
+        <span class="main"><span class="title">Salary</span>
+          <span class="sub">${esc(salarySummary())}</span></span>
         ${icon('chev', 'chev s14')}
       </button>
     </div>
@@ -684,37 +687,48 @@ async function submitRepay(form) {
     `Recorded ${money(Math.round(amount * 100), loan.group.project.currency)} against ${loan.title}.`);
 }
 
-/** A new loan, in a loans group: from the + sheet, a loans group, or a person (filled in with them). */
-function openNewLoan(groupId, personId) {
+/**
+ * A new loan, in a loans group: from the + sheet, a loans group, or a person (filled in with
+ * them). With `loanId`, the same form edits that loan; its group stays as it is, as on the PC.
+ */
+function openNewLoan(groupId, personId, loanId = null) {
+  const editing = loanId ? m().entryById.get(loanId) : null;
   const loanGroups = (pid) => groupsOf(pid).filter((g) => g.kind === GroupKind.Loan);
   const projects = activeProjects().filter((p) => loanGroups(p.id).length);
-  const start = m().groups.get(groupId) ?? m().groups.get(localStorage.getItem('et.lastLoanGroup')) ?? loanGroups(projects[0]?.id)[0];
+  const start = editing?.group ?? m().groups.get(groupId) ?? m().groups.get(localStorage.getItem('et.lastLoanGroup')) ?? loanGroups(projects[0]?.id)[0];
   if (!start || start.kind !== GroupKind.Loan) return toast('Make a loans group on the PC first.', true);
 
   const person = personId ? m().people.get(personId) : null;
+  const value = (v) => esc(v ?? '');
   const groupOptions = (pid, selected) => loanGroups(pid).map((g) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
 
-  const sheet = openSheet(`<form data-form="newloan">
-    <h2>New loan</h2><div class="subtitle" data-role="context"></div>
+  const borrowed = (editing?.direction ?? Direction.Borrowed) === Direction.Borrowed;
+
+  const sheet = openSheet(`<form data-form="newloan" ${editing ? `data-loan="${editing.id}"` : ''}>
+    <h2>${editing ? 'Edit loan' : 'New loan'}</h2><div class="subtitle" data-role="context"></div>
     <div class="field"><label>Which way?</label><select class="input" name="direction">
-      <option value="${Direction.Borrowed}">I borrowed it: I owe them</option>
-      <option value="${Direction.Lent}">I lent it: they owe me</option></select></div>
-    <div class="field"><label>Who</label><input class="input" name="who" required autocomplete="off" list="people-names" placeholder="Name" value="${esc(person?.name ?? '')}">
+      <option value="${Direction.Borrowed}" ${borrowed ? 'selected' : ''}>I borrowed it: I owe them</option>
+      <option value="${Direction.Lent}" ${borrowed ? '' : 'selected'}>I lent it: they owe me</option></select></div>
+    <div class="field"><label>Who</label><input class="input" name="who" required autocomplete="off" list="people-names" placeholder="Name" value="${value(editing?.counterparty ?? person?.name)}">
       <datalist id="people-names">${[...m().people.values()].map((p) => `<option value="${esc(p.name)}">`).join('')}</datalist></div>
-    <div class="two">
-      <div class="field"><label>Project</label><select class="input" name="project">${projects.map((p) =>
+    <div class="two" ${editing ? 'hidden' : ''}>
+      <div class="field"><label>Project</label><select class="input" name="project">${(editing ? [start.project] : projects).map((p) =>
         `<option value="${p.id}" ${p.id === start.projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label>Group</label><select class="input" name="group">${groupOptions(start.projectId, start.id)}</select></div>
     </div>
-    <div class="field"><label>What for?</label><input class="input" name="title" required autocomplete="off" placeholder="Rent deposit"></div>
+    <div class="field"><label>What for?</label><input class="input" name="title" required autocomplete="off" placeholder="Rent deposit" value="${value(editing?.title)}"></div>
     <div class="two">
-      <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"></div>
-      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${todayValue()}" required></div>
+      <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"
+        value="${editing ? (editing.amount / 100).toFixed(2) : ''}"></div>
+      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${editing ? dateValue(editing.occurredOn) : todayValue()}" required></div>
     </div>
-    <div class="field"><label>Due <span class="opt">(optional)</span></label><input class="input" name="due" type="date"></div>
-    <div class="field"><label class="weigh"><input type="checkbox" name="movesCash" checked> The money went through my cash</label></div>
-    <div class="field"><label>Note <span class="opt">(optional)</span></label><textarea class="input" name="note"></textarea></div>
-    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Add loan</button></div>
+    <div class="field"><label>Due <span class="opt">(optional)</span></label><input class="input" name="due" type="date" value="${editing?.dueDate ? dateValue(editing.dueDate) : ''}"></div>
+    <div class="field"><label class="weigh"><input type="checkbox" name="movesCash" ${!editing || editing.movesCash ? 'checked' : ''}> The money went through my cash</label></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><textarea class="input" name="note">${value(editing?.note)}</textarea></div>
+    <div class="actions">${editing
+      ? `<button type="button" class="btn danger" data-act="delete-loan" data-id="${editing.id}">${icon('close')}Delete</button>`
+      : '<button type="button" class="btn" data-act="close">Cancel</button>'}
+      <button class="btn primary" type="submit">${editing ? 'Save changes' : 'Add loan'}</button></div>
   </form>`);
 
   const form = sheet.querySelector('form');
@@ -742,6 +756,19 @@ async function submitNewLoan(form) {
 
   const group = m().groups.get(form.group.value);
   const direction = Number(form.direction.value);
+  const editing = form.dataset.loan ? m().entryById.get(form.dataset.loan) : null;
+
+  if (editing) {
+    // Unchanged dates keep their time of day, so nothing shifts within its day.
+    const keep = (input, ms) => (ms && input.value === dateValue(ms) ? ms : input.value ? dayToMs(input.value) : null);
+    await save(updateLoan(m(), editing, {
+      title: form.title.value, counterparty: form.who.value, direction, amount,
+      occurredOn: keep(form.date, editing.occurredOn), dueDate: keep(form.due, editing.dueDate),
+      note: form.note.value, movesCash: form.movesCash.checked,
+    }), `Saved ${form.title.value.trim()}.`);
+    return openLoan(editing.id);
+  }
+
   localStorage.setItem('et.lastLoanGroup', group.id);
   await save(addLoan(m(), {
     groupId: group.id, title: form.title.value, counterparty: form.who.value, direction, amount,
@@ -794,13 +821,44 @@ function openLoan(id) {
     <div>${moneyHtml(remaining(l), c, 'big')} <span class="amt muted">left of ${esc(money(l.amount, c))}</span></div>
     ${bar(paidSoFar(l), l.amount)}
     ${l.dueDate ? `<div class="kv"><span>Due</span><span>${dateFmt.format(new Date(l.dueDate))}</span></div>` : ''}
+    ${l.movesCash ? '' : '<div class="kv"><span>Cash</span><span>Not in cash</span></div>'}
     ${l.note ? `<p class="sec">${esc(l.note)}</p>` : ''}
-    <div class="section" style="margin-left:0"><span>${l.payments.length === 1 ? '1 repayment' : `${l.payments.length} repayments`}</span></div>
+    <div class="section" style="margin-left:0"><span>${l.payments.length === 1 ? '1 repayment' : `${l.payments.length} repayments`}</span>
+      ${l.payments.length ? '<span>Tap one to change it</span>' : ''}</div>
     <div class="card list">${[...l.payments].sort((a, b) => b.paidOn - a.paidOn).map((p) => `
-      <div class="row"><span class="main"><span class="title">${dateFmt.format(new Date(p.paidOn))}</span>${p.note ? `<span class="sub">${esc(p.note)}</span>` : ''}</span>
-        <span class="end">${moneyHtml(p.amount, c, 'row-amt')}</span></div>`).join('') || '<div class="empty">None yet.</div>'}</div>
-    <div class="actions"><button class="btn" data-act="close">Close</button>
-      ${settled ? '' : `<button class="btn primary" data-act="repay" data-loan="${l.id}">Record repayment</button>`}</div>`);
+      <button class="row" data-act="payment" data-id="${p.id}"><span class="main"><span class="title">${dateFmt.format(new Date(p.paidOn))}</span>${p.note ? `<span class="sub">${esc(p.note)}</span>` : ''}</span>
+        <span class="end">${moneyHtml(p.amount, c, 'row-amt')}</span></button>`).join('') || '<div class="empty">None yet.</div>'}</div>
+    <div class="actions">
+      <button class="btn" data-act="edit-loan" data-id="${l.id}">${icon('pencil')}Edit</button>
+      ${settled ? '' : `<button class="btn" data-act="settle" data-id="${l.id}">${icon('check')}Settle</button>`}
+    </div>
+    ${settled ? '' : `<button class="btn primary wide" style="margin-top:10px" data-act="repay" data-loan="${l.id}">${icon('plus')}Record repayment</button>`}`);
+}
+
+/** One repayment, to change or take back: the PC's Edit and Delete on a repayment row. */
+function openPayment(id) {
+  const p = m().payments.find((x) => x.id === id);
+  if (!p?.loan) return;
+  const c = p.loan.group.project.currency;
+  openSheet(`<form data-form="payment" data-id="${p.id}">
+    <h2>Repayment</h2><div class="subtitle">${esc(p.loan.title)} · ${p.loan.direction === Direction.Borrowed ? 'to' : 'from'} ${esc(p.loan.counterparty)}</div>
+    <div class="two">
+      <div class="field"><label>Amount (${SYMBOL[c]})</label><input class="input amount" name="amount" inputmode="decimal" required value="${(p.amount / 100).toFixed(2)}"></div>
+      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${dateValue(p.paidOn)}" required></div>
+    </div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" value="${esc(p.note ?? '')}"></div>
+    <div class="actions"><button type="button" class="btn danger" data-act="delete-payment" data-id="${p.id}">${icon('close')}Delete</button>
+      <button class="btn primary" type="submit">Save changes</button></div>
+  </form>`);
+}
+
+async function submitPayment(form) {
+  const p = m().payments.find((x) => x.id === form.dataset.id);
+  const amount = parseAmount(form.amount.value);
+  if (!(amount > 0)) return sheetProblem(form, 'A repayment has to be more than zero.');
+  const paidOn = form.date.value === dateValue(p.paidOn) ? p.paidOn : dayToMs(form.date.value);
+  await save(updateRepayment(m(), p, { amount, paidOn, note: form.note.value }), 'Repayment saved.');
+  openLoan(p.loan.id);
 }
 
 function openPerson(id) {
@@ -818,6 +876,173 @@ function openPerson(id) {
     }).join('')}</div>
     <div class="actions"><button class="btn" data-act="close">Close</button>
       <button class="btn primary" data-act="newloan" data-person="${ledger.person.id}">${icon('plus')}New loan</button></div>`);
+}
+
+// ---------- Salary ----------
+
+const SNOOZE = 'et.salarySnooze';
+const salaryJob = (id) => m().salary.jobs.find((j) => j.id === id);
+const thisMonth = () => monthKey(Date.now());
+const monthName = (month) => monthLabel(month).split(' ')[0];
+
+/** "Full-time, Minijob · October: 1 of 2 in" for the home screen. */
+function salarySummary() {
+  const { jobs } = m().salary;
+  if (!jobs.length) return 'Set up your jobs: asks each payday';
+  const month = thisMonth();
+  const done = jobs.filter((j) => j.payments.some((p) => p.month === month)).length;
+  return `${jobs.map((j) => j.name).join(', ')} · ${monthName(month)}: ${done} of ${jobs.length} in`;
+}
+
+function renderSalary() {
+  const { jobs } = m().salary;
+  const month = thisMonth();
+  frame('Salary', `${jobs.map((j) => {
+    const filed = j.payments.find((p) => p.month === month);
+    return `<div class="section"><span>${esc(j.name)}</span>
+      <button class="linkish" data-act="salary-job" data-id="${j.id}">${icon('pencil', 's14')} Payday ${j.payday}${j.tracksHours ? ' · hours' : ''}</button></div>
+      <div class="card list">
+        ${filed ? '' : `<button class="row" data-act="salary-ask" data-id="${j.id}">
+          <span class="glyph">${icon('plus')}</span><span class="main"><span class="title">File ${esc(monthName(month))}'s salary</span>
+          <span class="sub">${salaryDue(m()).includes(j) ? 'Payday has come' : `Payday is the ${j.payday}.`}</span></span></button>`}
+        ${j.payments.map((p) => {
+          const note = salaryNote(j, p.month, p.amount, p.hours);
+          return `<button class="row" data-act="salary-payment" data-id="${p.id}">
+            <span class="main"><span class="title">${esc(monthLabel(p.month))}</span>${note ? `<span class="sub">${esc(note)}</span>` : ''}</span>
+            <span class="end">${moneyHtml(p.amount, j.currency, 'row-amt')}</span></button>`;
+        }).join('') || '<div class="empty">Nothing filed yet.</div>'}
+      </div>`;
+  }).join('')}
+    ${jobs.length ? '' : '<div class="empty">Add your jobs: each asks once a month, on its payday, whether the salary stayed the same.</div>'}
+    <div style="margin-top:12px"><button class="btn wide" data-act="salary-job">${icon('plus')}Add a job</button></div>
+    <p class="hint" style="margin:12px 4px">Each salary goes onto your cash as money in, so the PC sees it too, with the comparison in its description.</p>`,
+  { back: '#/' });
+}
+
+/** Adding or changing a job: its name, currency, payday, and whether it asks for hours. */
+function openSalaryJob(id) {
+  const job = id ? salaryJob(id) : null;
+  const first = !job && !m().salary.jobs.length;
+  openSheet(`<form data-form="salary-job" ${job ? `data-id="${job.id}"` : ''}>
+    <h2>${job ? 'Edit job' : 'Add a job'}</h2><div class="subtitle">On its payday each month the app asks about this salary.</div>
+    <div class="field"><label>Name</label><input class="input" name="name" required autocomplete="off" placeholder="${first ? 'Full-time' : 'Minijob'}" value="${esc(job?.name ?? '')}"></div>
+    <div class="two">
+      <div class="field"><label>Paid in</label><select class="input" name="currency">
+        ${Currencies.map((c) => `<option value="${c}" ${c === (job?.currency ?? 0) ? 'selected' : ''}>${CODE[c]} · ${SYMBOL[c]}</option>`).join('')}</select></div>
+      <div class="field"><label>Payday (day of month)</label><input class="input" name="payday" type="number" inputmode="numeric" min="1" max="31" required value="${job?.payday ?? ''}" placeholder="28"></div>
+    </div>
+    <div class="field"><label class="weigh"><input type="checkbox" name="tracksHours" ${job?.tracksHours ? 'checked' : ''}> Ask for the hours I worked (for a minijob)</label></div>
+    <div class="actions">${job
+      ? `<button type="button" class="btn danger" data-act="delete-salary-job" data-id="${job.id}">${icon('close')}Delete</button>`
+      : '<button type="button" class="btn" data-act="close">Cancel</button>'}
+      <button class="btn primary" type="submit">${job ? 'Save' : 'Add job'}</button></div>
+  </form>`);
+}
+
+async function submitSalaryJob(form) {
+  const payday = Number(form.payday.value);
+  if (!form.name.value.trim()) return sheetProblem(form, 'Give the job a name.');
+  if (!(payday >= 1 && payday <= 31)) return sheetProblem(form, 'The payday is a day of the month, 1 to 31.');
+  const values = { name: form.name.value, currency: Number(form.currency.value), payday, tracksHours: form.tracksHours.checked };
+  const job = form.dataset.id ? salaryJob(form.dataset.id) : null;
+  await save(job ? updateSalaryJob(job, values) : addSalaryJob(m(), values), job ? 'Saved.' : `Added ${values.name.trim()}.`);
+}
+
+/**
+ * The monthly question for one job: did the salary stay the same, go up, or go down? Same
+ * files last month's amount; up or down asks for the new one. The first month just asks.
+ */
+function openSalaryPrompt(jobId, { asked = false } = {}) {
+  const job = salaryJob(jobId);
+  if (!job) return;
+  const month = thisMonth();
+  const last = job.payments.find((p) => p.month < month) ?? null;
+  const c = job.currency;
+  const sheet = openSheet(`<form data-form="salary" data-job="${job.id}" data-mode="${last ? '' : 'amount'}" ${asked ? 'data-asked="1"' : ''}>
+    <h2>${esc(job.name)} salary</h2>
+    <div class="subtitle">${esc(monthLabel(month))}${last ? ` · last was ${esc(money(last.amount, c))} in ${esc(monthLabel(last.month))}` : ''}</div>
+    ${job.tracksHours ? `<div class="field"><label>Hours worked this month</label>
+      <input class="input amount" name="hours" inputmode="decimal" required placeholder="0" value="${last?.hours ?? ''}"></div>` : ''}
+    ${last ? `<div class="field"><label>Did it stay the same?</label></div>
+      <div class="choices" data-role="ask">
+        <button type="button" class="choice" data-act="salary-same"><span class="glyph">${icon('check')}</span>
+          <span><b>Stayed the same</b><span>File ${esc(money(last.amount, c))}</span></span></button>
+        <button type="button" class="choice" data-act="salary-change" data-mode="up"><span class="glyph">${icon('in')}</span>
+          <span><b>It went up</b><span>Type the new amount</span></span></button>
+        <button type="button" class="choice" data-act="salary-change" data-mode="down"><span class="glyph">${icon('out')}</span>
+          <span><b>It went down</b><span>Type the new amount</span></span></button>
+      </div>` : ''}
+    <div data-role="amount" ${last ? 'hidden' : ''}>
+      <div class="field"><label>${last ? 'How much is it now?' : `How much was ${esc(monthName(month))}'s salary?`} (${SYMBOL[c]})</label>
+        <input class="input amount" name="amount" inputmode="decimal" placeholder="0.00"></div>
+      <div class="hint" data-role="preview"></div>
+    </div>
+    <div class="actions"><button type="button" class="btn" data-act="salary-later" data-id="${job.id}">Not paid yet</button>
+      <button class="btn primary" type="submit" ${last ? 'hidden' : ''}>File it</button></div>
+  </form>`);
+
+  const form = sheet.querySelector('form');
+  const preview = () => {
+    const amount = parseAmount(form.amount.value);
+    const hours = form.hours ? parseAmount(form.hours.value) : null;
+    sheet.querySelector('[data-role=preview]').textContent = amount > 0 ? salaryNote(job, month, Math.round(amount * 100), hours) : '';
+  };
+  form.amount.addEventListener('input', preview);
+  form.hours?.addEventListener('input', preview);
+}
+
+async function submitSalary(form) {
+  const job = salaryJob(form.dataset.job);
+  const month = thisMonth();
+  const last = job.payments.find((p) => p.month < month) ?? null;
+  const mode = form.dataset.mode;
+  const hours = form.hours ? parseAmount(form.hours.value) : null;
+  if (job.tracksHours && !(hours > 0)) return sheetProblem(form, 'How many hours did you work this month?');
+
+  const amount = mode === 'same' ? last.amount / 100 : parseAmount(form.amount.value);
+  if (!(amount > 0)) return sheetProblem(form, 'The salary has to be a number more than zero.');
+  if (mode === 'up' && amount * 100 <= last.amount) return sheetProblem(form, `That is not more than last time (${money(last.amount, job.currency)}). Did it go down?`);
+  if (mode === 'down' && amount * 100 >= last.amount) return sheetProblem(form, `That is not less than last time (${money(last.amount, job.currency)}). Did it go up?`);
+
+  await save(addSalary(job, { month, amount, hours, paidOn: Date.now() }),
+    `Filed ${money(Math.round(amount * 100), job.currency)} from ${job.name}.`);
+  if (form.dataset.asked) askSalary(); // the next job's question, if one is waiting
+}
+
+/** A filed salary, to correct or remove. */
+function openSalaryPayment(id) {
+  const p = m().salary.payments.find((x) => x.id === id);
+  const job = p && salaryJob(p.jobId);
+  if (!job) return;
+  openSheet(`<form data-form="salary-payment" data-id="${p.id}">
+    <h2>${esc(job.name)} · ${esc(monthLabel(p.month))}</h2><div class="subtitle">${esc(salaryNote(job, p.month, p.amount, p.hours) || 'The first one filed')}</div>
+    <div class="two">
+      <div class="field"><label>Amount (${SYMBOL[job.currency]})</label><input class="input amount" name="amount" inputmode="decimal" required value="${(p.amount / 100).toFixed(2)}"></div>
+      ${job.tracksHours ? `<div class="field"><label>Hours</label><input class="input amount" name="hours" inputmode="decimal" value="${p.hours ?? ''}"></div>` : ''}
+    </div>
+    <div class="actions"><button type="button" class="btn danger" data-act="delete-salary" data-id="${p.id}">${icon('close')}Delete</button>
+      <button class="btn primary" type="submit">Save changes</button></div>
+  </form>`);
+}
+
+async function submitSalaryPayment(form) {
+  const p = m().salary.payments.find((x) => x.id === form.dataset.id);
+  const amount = parseAmount(form.amount.value);
+  if (!(amount > 0)) return sheetProblem(form, 'The salary has to be a number more than zero.');
+  await save(updateSalary(m(), salaryJob(p.jobId), p, { amount, hours: form.hours ? parseAmount(form.hours.value) : null }), 'Saved.');
+}
+
+function snoozed() {
+  try { return JSON.parse(localStorage.getItem(SNOOZE) || '{}'); } catch { return {}; }
+}
+
+/** Asks about the first job whose payday has come, unless something else is open or it was put off today. */
+function askSalary() {
+  if (!state.model || state.sheet) return;
+  const today = dateValue(Date.now());
+  const off = snoozed();
+  const next = salaryDue(m()).find((j) => off[j.id] !== today);
+  if (next) openSalaryPrompt(next.id, { asked: true });
 }
 
 // ---------- Shopping list ----------
@@ -1064,6 +1289,62 @@ document.addEventListener('click', async (event) => {
     moneyin: openMoneyIn,
     repay: () => openRepay(el.dataset.loan),
     newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
+    'edit-loan': () => openNewLoan(null, null, el.dataset.id),
+    payment: () => openPayment(el.dataset.id),
+    settle: async () => {
+      const l = m().entryById.get(el.dataset.id);
+      const c = l.group.project.currency;
+      if (!confirm(`Settle ${l.title}? A repayment of ${money(remaining(l), c)} will be recorded today, clearing the loan.`)) return;
+      await save(settleLoan(m(), l), `${l.title} is settled.`);
+      openLoan(l.id);
+    },
+    'delete-loan': async () => {
+      const l = m().entryById.get(el.dataset.id);
+      if (!l || !confirm(`Delete ${l.title}? The loan and every repayment recorded against it go too, on the PC as well.`)) return;
+      await save(deleteLoan(m(), l), `Deleted ${l.title}.`);
+    },
+    'delete-payment': async () => {
+      const p = m().payments.find((x) => x.id === el.dataset.id);
+      if (!p || !confirm(`Delete the ${money(p.amount, p.loan.group.project.currency)} repayment? The loan shows that much outstanding again, `
+        + 'the cash comes back, and its entry in Loan payments goes with it.')) return;
+      await save(deleteRepayment(m(), p), 'Repayment deleted.');
+      openLoan(p.loan.id);
+    },
+    'salary-job': () => openSalaryJob(el.dataset.id),
+    'salary-ask': () => openSalaryPrompt(el.dataset.id),
+    'salary-payment': () => openSalaryPayment(el.dataset.id),
+    'salary-same': () => {
+      const form = el.closest('form');
+      form.dataset.mode = 'same';
+      form.requestSubmit();
+    },
+    'salary-change': () => {
+      const form = el.closest('form');
+      form.dataset.mode = el.dataset.mode;
+      form.querySelector('[data-role=ask]').hidden = true;
+      form.querySelector('[data-role=amount]').hidden = false;
+      form.querySelector('[type=submit]').hidden = false;
+      form.amount.focus();
+    },
+    'salary-later': () => {
+      const off = snoozed();
+      off[el.dataset.id] = dateValue(Date.now());
+      try { localStorage.setItem(SNOOZE, JSON.stringify(off)); } catch { /* private mode */ }
+      const asked = el.closest('form')?.dataset.asked;
+      closeSheet();
+      toast('Asking again tomorrow.');
+      if (asked) askSalary();
+    },
+    'delete-salary-job': async () => {
+      const job = salaryJob(el.dataset.id);
+      if (!job || !confirm(`Delete ${job.name} and its salary list? The money it paid stays in your cash.`)) return;
+      await save(deleteSalaryJob(job), `Deleted ${job.name}.`);
+    },
+    'delete-salary': async () => {
+      const p = m().salary.payments.find((x) => x.id === el.dataset.id);
+      if (!p || !confirm(`Delete ${monthLabel(p.month)}'s salary? It comes off your cash too.`)) return;
+      await save(deleteSalary(p), 'Deleted.');
+    },
     entry: () => openEntry(el.dataset.id),
     loan: () => openLoan(el.dataset.id),
     person: () => openPerson(el.dataset.id),
@@ -1187,6 +1468,10 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'moneyin') await submitMoneyIn(form);
     if (form.dataset.form === 'repay') await submitRepay(form);
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
+    if (form.dataset.form === 'payment') await submitPayment(form);
+    if (form.dataset.form === 'salary-job') await submitSalaryJob(form);
+    if (form.dataset.form === 'salary') await submitSalary(form);
+    if (form.dataset.form === 'salary-payment') await submitSalaryPayment(form);
   } catch (e) {
     sheetProblem(form, `Could not save that: ${e.message}`);
   } finally {
@@ -1195,7 +1480,8 @@ document.addEventListener('submit', async (event) => {
 });
 
 window.addEventListener('hashchange', () => { closeSheet(); render(); window.scrollTo(0, 0); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow({ quiet: true }); });
+// Back in the app: catch up, then ask about any salary whose payday has come.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow({ quiet: true }).finally(askSalary); });
 window.addEventListener('online', () => syncNow({ quiet: true }));
 setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet: true }); }, 60_000);
 
@@ -1205,7 +1491,8 @@ setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet:
   if (DEMO) {
     demoRows = (await (await fetch('test/fixture.json')).json()).rows;
     state.lastSync = new Date().toISOString();
-    return reload();
+    await reload();
+    return askSalary();
   }
   if ('serviceWorker' in navigator) {
     // A new version took over while the app was open: reload once so every file is the new one.
@@ -1228,5 +1515,5 @@ setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet:
   if (!api.isSignedIn()) return renderSignIn();
   await store.useAccount(api.userId());
   await reload();
-  syncNow({ quiet: true });
+  syncNow({ quiet: true }).finally(askSalary);
 })();

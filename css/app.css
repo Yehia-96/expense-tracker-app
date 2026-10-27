@@ -69,6 +69,7 @@ svg.i.s22 { width: 22px; height: 22px; }
 
 main { padding: 14px 16px calc(var(--safe-bottom) + 96px); max-width: 720px; margin: 0 auto; }
 .section { margin: 22px 4px 8px; font-size: 13px; font-weight: 600; color: var(--text-secondary); display: flex; justify-content: space-between; }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
 
 /* ---------- Cards and rows ---------- */
 .card { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-l); }
@@ -195,3 +196,6 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .brand svg.i { width: 28px; height: 28px; stroke-width: 2.2; }
 .signin h1 { margin: 0 0 6px; font-size: 26px; }
 .signin p { color: var(--text-secondary); margin: 0 0 24px; }
+
+/* Hidden means hidden, whatever display a class gives the element. */
+[hidden] { display: none !important; }
