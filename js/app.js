@@ -7,7 +7,7 @@ import {
   Currencies, GroupKind, Direction, Period,
 } from './calc.js';
 import {
-  addExpense, addMoneyIn, addRepayment, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  addExpense, addMoneyIn, addRepayment, addLoan, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -396,7 +396,8 @@ function renderGroup(group) {
 
   if (group.kind === GroupKind.Loan) {
     const loans = m().loans.filter((l) => l.groupId === group.id).sort((a, b) => isSettled(a) - isSettled(b) || b.occurredOn - a.occurredOn);
-    return frame(group.name, `<div class="card list">${loans.map((l) => {
+    return frame(group.name, `<div style="margin-bottom:12px"><button class="btn primary wide" data-act="newloan" data-group="${group.id}">${icon('plus')}New loan</button></div>
+      <div class="card list">${loans.map((l) => {
       const settled = isSettled(l);
       const overdue = !settled && l.dueDate && l.dueDate < Date.now();
       const borrowed = l.direction === Direction.Borrowed;
@@ -493,8 +494,10 @@ function openAdd() {
       <button class="choice" data-act="expense" data-group="${group && group.kind === GroupKind.Expense && !isRepaymentGroup(group) ? group.id : ''}">
         <span class="glyph">${icon('receipt')}</span><span><b>An expense</b><span>Something paid for, with a receipt photo if you like</span></span></button>
       <button class="choice" data-act="moneyin"><span class="glyph">${icon('in')}</span><span><b>Money in</b><span>Salary, a transfer, cash you were given</span></span></button>
+      <button class="choice" data-act="newloan" data-group="${group && group.kind === GroupKind.Loan ? group.id : ''}">
+        <span class="glyph">${icon('loan')}</span><span><b>A loan</b><span>Money you borrowed, or lent to someone</span></span></button>
       <button class="choice" data-act="repay">
-        <span class="glyph">${icon('loan')}</span><span><b>A repayment</b><span>Paying back a loan, or being paid back</span></span></button>
+        <span class="glyph">${icon('check')}</span><span><b>A repayment</b><span>Paying back a loan, or being paid back</span></span></button>
     </div>`);
 }
 
@@ -681,6 +684,72 @@ async function submitRepay(form) {
     `Recorded ${money(Math.round(amount * 100), loan.group.project.currency)} against ${loan.title}.`);
 }
 
+/** A new loan, in a loans group: from the + sheet, a loans group, or a person (filled in with them). */
+function openNewLoan(groupId, personId) {
+  const loanGroups = (pid) => groupsOf(pid).filter((g) => g.kind === GroupKind.Loan);
+  const projects = activeProjects().filter((p) => loanGroups(p.id).length);
+  const start = m().groups.get(groupId) ?? m().groups.get(localStorage.getItem('et.lastLoanGroup')) ?? loanGroups(projects[0]?.id)[0];
+  if (!start || start.kind !== GroupKind.Loan) return toast('Make a loans group on the PC first.', true);
+
+  const person = personId ? m().people.get(personId) : null;
+  const groupOptions = (pid, selected) => loanGroups(pid).map((g) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+
+  const sheet = openSheet(`<form data-form="newloan">
+    <h2>New loan</h2><div class="subtitle" data-role="context"></div>
+    <div class="field"><label>Which way?</label><select class="input" name="direction">
+      <option value="${Direction.Borrowed}">I borrowed it: I owe them</option>
+      <option value="${Direction.Lent}">I lent it: they owe me</option></select></div>
+    <div class="field"><label>Who</label><input class="input" name="who" required autocomplete="off" list="people-names" placeholder="Name" value="${esc(person?.name ?? '')}">
+      <datalist id="people-names">${[...m().people.values()].map((p) => `<option value="${esc(p.name)}">`).join('')}</datalist></div>
+    <div class="two">
+      <div class="field"><label>Project</label><select class="input" name="project">${projects.map((p) =>
+        `<option value="${p.id}" ${p.id === start.projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Group</label><select class="input" name="group">${groupOptions(start.projectId, start.id)}</select></div>
+    </div>
+    <div class="field"><label>What for?</label><input class="input" name="title" required autocomplete="off" placeholder="Rent deposit"></div>
+    <div class="two">
+      <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"></div>
+      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${todayValue()}" required></div>
+    </div>
+    <div class="field"><label>Due <span class="opt">(optional)</span></label><input class="input" name="due" type="date"></div>
+    <div class="field"><label class="weigh"><input type="checkbox" name="movesCash" checked> The money went through my cash</label></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><textarea class="input" name="note"></textarea></div>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Add loan</button></div>
+  </form>`);
+
+  const form = sheet.querySelector('form');
+  const context = () => {
+    const p = m().projects.get(form.project.value);
+    const borrowed = Number(form.direction.value) === Direction.Borrowed;
+    sheet.querySelector('[data-role=context]').textContent = !p ? ''
+      : !form.movesCash.checked ? `Kept out of your ${CASH_NAME[p.currency]} cash: it was paid straight to someone else.`
+      : borrowed ? `Adds to your ${CASH_NAME[p.currency]} cash: the money came to you.`
+      : `Comes off your ${CASH_NAME[p.currency]} cash: the money went to them.`;
+  };
+  context();
+  form.project.addEventListener('change', () => { form.group.innerHTML = groupOptions(form.project.value, null); context(); });
+  form.direction.addEventListener('change', context);
+  form.movesCash.addEventListener('change', context);
+}
+
+async function submitNewLoan(form) {
+  const amount = parseAmount(form.amount.value);
+  if (!form.who.value.trim()) return sheetProblem(form, 'Say who the loan is with.');
+  if (!form.title.value.trim()) return sheetProblem(form, 'Say what the loan was for.');
+  if (!(amount > 0)) return sheetProblem(form, 'The amount has to be a number more than zero.');
+  if (!form.group.value) return sheetProblem(form, 'Pick a loans group for it.');
+  if (form.due.value && form.due.value < form.date.value) return sheetProblem(form, 'The due date is before the loan was made.');
+
+  const group = m().groups.get(form.group.value);
+  const direction = Number(form.direction.value);
+  localStorage.setItem('et.lastLoanGroup', group.id);
+  await save(addLoan(m(), {
+    groupId: group.id, title: form.title.value, counterparty: form.who.value, direction, amount,
+    occurredOn: dayToMs(form.date.value), dueDate: form.due.value ? dayToMs(form.due.value) : null,
+    note: form.note.value, movesCash: form.movesCash.checked,
+  }), `${direction === Direction.Borrowed ? 'Borrowed' : 'Lent'} ${money(Math.round(amount * 100), group.project.currency)}: ${form.who.value.trim().split(/\s+/).join(' ')}.`);
+}
+
 async function openEntry(id) {
   const e = m().entryById.get(id);
   if (!e) return;
@@ -747,7 +816,8 @@ function openPerson(id) {
         <span class="end">${moneyHtml(remaining(l), c, `row-amt ${isSettled(l) ? 'muted' : borrowed ? 'bor' : 'lent'}`)}</span>
       </button>`;
     }).join('')}</div>
-    <div class="actions"><button class="btn" data-act="close">Close</button></div>`);
+    <div class="actions"><button class="btn" data-act="close">Close</button>
+      <button class="btn primary" data-act="newloan" data-person="${ledger.person.id}">${icon('plus')}New loan</button></div>`);
 }
 
 // ---------- Shopping list ----------
@@ -993,6 +1063,7 @@ document.addEventListener('click', async (event) => {
     expense: () => openExpense(el.dataset.group),
     moneyin: openMoneyIn,
     repay: () => openRepay(el.dataset.loan),
+    newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
     entry: () => openEntry(el.dataset.id),
     loan: () => openLoan(el.dataset.id),
     person: () => openPerson(el.dataset.id),
@@ -1115,6 +1186,7 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'expense') await submitExpense(form);
     if (form.dataset.form === 'moneyin') await submitMoneyIn(form);
     if (form.dataset.form === 'repay') await submitRepay(form);
+    if (form.dataset.form === 'newloan') await submitNewLoan(form);
   } catch (e) {
     sheetProblem(form, `Could not save that: ${e.message}`);
   } finally {

@@ -197,6 +197,56 @@ export function addRepayment(model, { loan, amount, paidOn, note }) {
   return changes;
 }
 
+/** A name as the desktop matches people: spaces squeezed, upper case ("  uncle  ayman" is "UNCLE AYMAN"). */
+export const normalizeName = (name) => (name || '').split(/\s+/).filter(Boolean).join(' ').toUpperCase();
+
+/**
+ * A new loan, borrowed or lent. Its person is the one already going by that name, or a new
+ * one, as the desktop's PeopleService does, so their loans add up on the People page.
+ * `movesCash`: the money went through your cash (borrowed adds to it, lent takes from it).
+ */
+export function addLoan(model, { groupId, title, counterparty, direction, amount, occurredOn, dueDate = null, note, movesCash = true }) {
+  const changes = [];
+  const name = (counterparty || '').split(/\s+/).filter(Boolean).join(' ');
+  const normalized = normalizeName(name);
+  let person = normalized ? [...model.people.values()].find((p) => normalizeName(p.name) === normalized) : null;
+
+  if (normalized && !person) {
+    person = { id: newId(), name };
+    changes.push({
+      tbl: 'People', id: person.id, data: { Id: person.id, Name: name, NormalizedName: normalized, Note: null, CreatedAt: nowTicks() },
+    });
+  }
+
+  const id = newId();
+  changes.push({
+    tbl: 'Entries', id, data: {
+      Id: id,
+      Amount: toCents(amount),
+      Counterparty: person?.name ?? '',
+      CreatedAt: nowTicks(),
+      Direction: direction,
+      DueDate: dueDate === null ? null : msToTicks(dueDate),
+      EntryType: 'Loan',
+      ExchangedAmount: null,
+      ExchangedCurrency: null,
+      GroupId: groupId,
+      IsClosed: 0,
+      LoanPaymentId: null,
+      MovesCash: movesCash ? 1 : 0,
+      Note: note?.trim() ? note.trim() : null,
+      OccurredOn: msToTicks(occurredOn),
+      Payee: null,
+      PersonId: person?.id ?? null,
+      QuotedRate: null,
+      RecurringRuleId: null,
+      Title: title.trim(),
+      UpdatedAt: null,
+    },
+  });
+  return changes;
+}
+
 // ---------- Shopping list (phone only; the desktop skips these tables) ----------
 
 const itemRow = (item, changes) => ({ tbl: 'ShoppingItems', id: item.id, data: { ...item.raw, ...changes } });
