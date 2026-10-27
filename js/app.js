@@ -8,7 +8,7 @@ import {
 } from './calc.js';
 import {
   addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
-  addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  normalizeName, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -709,8 +709,8 @@ function openNewLoan(groupId, personId, loanId = null) {
     <div class="field"><label>Which way?</label><select class="input" name="direction">
       <option value="${Direction.Borrowed}" ${borrowed ? 'selected' : ''}>I borrowed it: I owe them</option>
       <option value="${Direction.Lent}" ${borrowed ? '' : 'selected'}>I lent it: they owe me</option></select></div>
-    <div class="field"><label>Who</label><input class="input" name="who" required autocomplete="off" list="people-names" placeholder="Name" value="${value(editing?.counterparty ?? person?.name)}">
-      <datalist id="people-names">${[...m().people.values()].map((p) => `<option value="${esc(p.name)}">`).join('')}</datalist></div>
+    <div class="field"><label>Who</label><input class="input" name="who" required autocomplete="off" placeholder="Pick below, or type a new name" value="${value(editing?.counterparty ?? person?.name)}">
+      <div class="people-pick" data-role="people"></div></div>
     <div class="two" ${editing ? 'hidden' : ''}>
       <div class="field"><label>Project</label><select class="input" name="project">${(editing ? [start.project] : projects).map((p) =>
         `<option value="${p.id}" ${p.id === start.projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
@@ -741,9 +741,27 @@ function openNewLoan(groupId, personId, loanId = null) {
       : `Comes off your ${CASH_NAME[p.currency]} cash: the money went to them.`;
   };
   context();
+  drawPeoplePick(form);
+  form.who.addEventListener('input', () => drawPeoplePick(form));
   form.project.addEventListener('change', () => { form.group.innerHTML = groupOptions(form.project.value, null); context(); });
   form.direction.addEventListener('change', context);
   form.movesCash.addEventListener('change', context);
+}
+
+/**
+ * Everyone in People as names to tap under "Who", narrowed to those matching what is typed.
+ * A name nobody has yet is said to be new: saving adds them to People.
+ */
+function drawPeoplePick(form) {
+  const typed = normalizeName(form.who.value);
+  const people = [...m().people.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const exact = people.some((p) => normalizeName(p.name) === typed);
+  // Once a name is picked, everyone stays in view so another is one tap away.
+  const shown = typed && !exact ? people.filter((p) => normalizeName(p.name).includes(typed)) : people;
+  form.querySelector('[data-role=people]').innerHTML = shown.map((p) => `<button type="button" class="pick-chip ${normalizeName(p.name) === typed ? 'on' : ''}"
+      data-act="pick-person" data-name="${esc(p.name)}">${esc(p.name)}</button>`).join('')
+    + (typed && !exact ? `<span class="hint">New: ${esc(form.who.value.trim())} joins People when you save.</span>` : '')
+    + (!people.length ? '<span class="hint">Nobody in People yet: type a name.</span>' : '');
 }
 
 async function submitNewLoan(form) {
@@ -1290,6 +1308,11 @@ document.addEventListener('click', async (event) => {
     repay: () => openRepay(el.dataset.loan),
     newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
     'edit-loan': () => openNewLoan(null, null, el.dataset.id),
+    'pick-person': () => {
+      const form = el.closest('form');
+      form.who.value = el.dataset.name;
+      drawPeoplePick(form);
+    },
     payment: () => openPayment(el.dataset.id),
     settle: async () => {
       const l = m().entryById.get(el.dataset.id);
