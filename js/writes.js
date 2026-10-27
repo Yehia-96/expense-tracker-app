@@ -296,6 +296,18 @@ export function updateLoan(model, loan, { title, counterparty, direction, amount
 /** A name as the desktop matches people: spaces squeezed, upper case ("  uncle  ayman" is "UNCLE AYMAN"). */
 export const normalizeName = (name) => (name || '').split(/\s+/).filter(Boolean).join(' ').toUpperCase();
 
+/** Someone added to People by hand, as on the PC: a name is needed, and nobody twice. */
+export function addPerson(model, { name, note }) {
+  const tidy = (name || '').split(/\s+/).filter(Boolean).join(' ');
+  const normalized = normalizeName(tidy);
+  if (!normalized) throw new Error('A person needs a name.');
+  const known = [...model.people.values()].find((p) => normalizeName(p.name) === normalized);
+  if (known) throw new Error(`${known.name} is already on the list.`);
+
+  const id = newId();
+  return [{ tbl: 'People', id, data: { Id: id, Name: tidy, NormalizedName: normalized, Note: note?.trim() ? note.trim() : null, CreatedAt: nowTicks() } }];
+}
+
 /** The person going by `name` (spaces and case aside), or a new one added to `changes`; none for no name. */
 function resolvePerson(model, name, changes) {
   const tidy = (name || '').split(/\s+/).filter(Boolean).join(' ');

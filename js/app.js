@@ -8,7 +8,7 @@ import {
 } from './calc.js';
 import {
   addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
-  normalizeName, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  normalizeName, addPerson, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -455,13 +455,15 @@ function renderGroup(group) {
 function renderPeople() {
   const ledgers = peopleLedgers(m()).sort((a, b) => (b.openCount > 0) - (a.openCount > 0));
   const lines = (fn, cls) => Currencies.map((c) => fn(c) ? `<div class="amt row-amt ${cls}">${esc(money(fn(c), c))}</div>` : '').join('');
-  frame('People', `<div class="card list">${ledgers.map((l) => `
+  frame('People', `<div style="margin-bottom:12px"><button class="btn primary wide" data-act="add-person">${icon('plus')}Add person</button></div>
+    <div class="card list">${ledgers.map((l) => `
     <button class="row" data-act="person" data-id="${l.person.id}">
       <span class="avatar round" style="background:${slot(PALETTE[[...l.person.name].reduce((s, ch) => s + ch.charCodeAt(0), 0) % 6])}">${esc(initials(l.person.name))}</span>
       <span class="main"><span class="title">${esc(l.person.name)}</span>
-        <span class="sub">${l.loans.length === 1 ? '1 loan' : `${l.loans.length} loans`}${l.openCount ? `, ${l.openCount} open` : ', settled'}</span></span>
+        <span class="sub">${!l.loans.length ? esc(l.person.note || 'No loans yet')
+          : `${l.loans.length === 1 ? '1 loan' : `${l.loans.length} loans`}${l.openCount ? `, ${l.openCount} open` : ', settled'}`}</span></span>
       <span class="end">${lines(l.youOwe, 'bor')}${lines(l.owedToYou, 'lent')}</span>
-    </button>`).join('') || '<div class="empty">Nobody yet. People are added when loans name them.</div>'}</div>
+    </button>`).join('') || '<div class="empty">Nobody yet. Add someone, or name them on a loan.</div>'}</div>
     <p class="hint" style="margin:12px 4px">Purple is what you owe them; teal is what they owe you.</p>`, { back: '#/' });
 }
 
@@ -764,6 +766,25 @@ function drawPeoplePick(form) {
     + (!people.length ? '<span class="hint">Nobody in People yet: type a name.</span>' : '');
 }
 
+function openAddPerson() {
+  openSheet(`<form data-form="person">
+    <h2>Add person</h2><div class="subtitle">Someone you lend to or borrow from. Their loans add up on their page.</div>
+    <div class="field"><label>Name</label><input class="input" name="name" required autocomplete="off" placeholder="Name"></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" autocomplete="off" placeholder="A phone number, how they like to be paid"></div>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Add</button></div>
+  </form>`).querySelector('input[name=name]').focus();
+}
+
+async function submitAddPerson(form) {
+  let changes;
+  try {
+    changes = addPerson(m(), { name: form.name.value, note: form.note.value });
+  } catch (e) {
+    return sheetProblem(form, e.message);
+  }
+  await save(changes, `Added ${changes[0].data.Name} to People.`);
+}
+
 async function submitNewLoan(form) {
   const amount = parseAmount(form.amount.value);
   if (!form.who.value.trim()) return sheetProblem(form, 'Say who the loan is with.');
@@ -891,7 +912,7 @@ function openPerson(id) {
         <span class="main"><span class="title">${esc(l.title)}</span><span class="sub">${esc(l.group.project.name)} · ${borrowed ? 'you owe' : 'owed to you'}${isSettled(l) ? ' · settled' : ''}</span></span>
         <span class="end">${moneyHtml(remaining(l), c, `row-amt ${isSettled(l) ? 'muted' : borrowed ? 'bor' : 'lent'}`)}</span>
       </button>`;
-    }).join('')}</div>
+    }).join('') || '<div class="empty">No loans with them yet.</div>'}</div>
     <div class="actions"><button class="btn" data-act="close">Close</button>
       <button class="btn primary" data-act="newloan" data-person="${ledger.person.id}">${icon('plus')}New loan</button></div>`);
 }
@@ -1308,6 +1329,7 @@ document.addEventListener('click', async (event) => {
     repay: () => openRepay(el.dataset.loan),
     newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
     'edit-loan': () => openNewLoan(null, null, el.dataset.id),
+    'add-person': openAddPerson,
     'pick-person': () => {
       const form = el.closest('form');
       form.who.value = el.dataset.name;
@@ -1492,6 +1514,7 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'repay') await submitRepay(form);
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
     if (form.dataset.form === 'payment') await submitPayment(form);
+    if (form.dataset.form === 'person') await submitAddPerson(form);
     if (form.dataset.form === 'salary-job') await submitSalaryJob(form);
     if (form.dataset.form === 'salary') await submitSalary(form);
     if (form.dataset.form === 'salary-payment') await submitSalaryPayment(form);
