@@ -115,7 +115,9 @@ export async function signOut() {
   const token = session?.access_token;
   saveSession(null);
   if (token) {
-    fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+    // Only this phone's session: without scope=local, Supabase ends every session of the account,
+    // signing out the PC and any other app on the same account (Work Tracker) as well.
+    fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`, {
       method: 'POST', headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
