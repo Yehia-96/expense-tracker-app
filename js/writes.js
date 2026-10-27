@@ -449,7 +449,8 @@ export function salaryNote(job, month, amount, hours) {
   return parts.join(' · ');
 }
 
-const salaryDescription = (job, month, amount, hours) =>
+/** The money in's description, worded exactly as the PC's SalaryService.Description. */
+export const salaryDescription = (job, month, amount, hours) =>
   [`Salary · ${job.name}, ${monthLabel(month)}`, salaryNote(job, month, amount, hours)].filter(Boolean).join(' · ');
 
 export function addSalaryJob(model, { name, currency, payday, tracksHours }) {
@@ -458,7 +459,7 @@ export function addSalaryJob(model, { name, currency, payday, tracksHours }) {
   return [{
     tbl: 'SalaryJobs', id, data: {
       Id: id, Name: name.trim(), Currency: currency, Payday: payday, TracksHours: tracksHours ? 1 : 0,
-      Position: last + 1, CreatedAt: Date.now(),
+      Position: last + 1, CreatedAt: nowTicks(),
     },
   }];
 }
@@ -480,7 +481,8 @@ export function addSalary(job, { month, amount, hours = null, paidOn }) {
   const id = newId();
   return [cash, {
     tbl: 'SalaryPayments', id, data: {
-      Id: id, JobId: job.id, Month: month, Amount: cents, Hours: hoursValue, CashTransactionId: cash.id, PaidOn: paidOn, CreatedAt: Date.now(),
+      Id: id, JobId: job.id, Month: month, Amount: cents, Hours: hoursValue, CashTransactionId: cash.id,
+      PaidOn: msToTicks(paidOn), CreatedAt: nowTicks(),
     },
   }];
 }

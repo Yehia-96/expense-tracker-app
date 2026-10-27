@@ -141,11 +141,14 @@ export function monthKey(ms) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** A time as ticks (how both apps store them) or, in rows from before that, milliseconds. */
+const instantMs = (v) => (Number(v) > 1e15 ? ticksToMs(v) : Number(v));
+
 function salaryModel(rows) {
   const payments = rows.filter((r) => r.tbl === 'SalaryPayments' && r.data).map((r) => ({
     id: r.data.Id, jobId: r.data.JobId, month: r.data.Month, amount: Number(r.data.Amount),
     hours: r.data.Hours === null || r.data.Hours === undefined ? null : Number(r.data.Hours),
-    cashId: r.data.CashTransactionId, paidOn: Number(r.data.PaidOn), raw: r.data,
+    cashId: r.data.CashTransactionId, paidOn: instantMs(r.data.PaidOn), raw: r.data,
   }));
 
   const jobs = rows.filter((r) => r.tbl === 'SalaryJobs' && r.data).map((r) => {
