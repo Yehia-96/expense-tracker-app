@@ -8,7 +8,7 @@ import {
 } from './calc.js';
 import {
   addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
-  normalizeName, addPerson, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  normalizeName, addPerson, addQuickTitle, deleteQuickTitle, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -936,14 +936,17 @@ function salarySummary() {
 function renderSalary() {
   const { jobs } = m().salary;
   const month = thisMonth();
+  const due = salaryDue(m());
   frame('Salary', `${jobs.map((j) => {
-    const filed = j.payments.find((p) => p.month === month);
+    const filed = j.payments.some((p) => p.month === month);
+    const waiting = due.filter((d) => d.job === j).map((d) => d.month);
+    if (!filed && !waiting.includes(month)) waiting.push(month); // before payday: can still be filed early
     return `<div class="section"><span>${esc(j.name)}</span>
       <button class="linkish" data-act="salary-job" data-id="${j.id}">${icon('pencil', 's14')} Payday ${j.payday}${j.tracksHours ? ' · hours' : ''}</button></div>
       <div class="card list">
-        ${filed ? '' : `<button class="row" data-act="salary-ask" data-id="${j.id}">
-          <span class="glyph">${icon('plus')}</span><span class="main"><span class="title">File ${esc(monthName(month))}'s salary</span>
-          <span class="sub">${salaryDue(m()).includes(j) ? 'Payday has come' : `Payday is the ${j.payday}.`}</span></span></button>`}
+        ${waiting.map((wm) => `<button class="row" data-act="salary-ask" data-id="${j.id}" data-month="${wm}">
+          <span class="glyph">${icon('plus')}</span><span class="main"><span class="title">File ${esc(monthName(wm))}'s salary</span>
+          <span class="sub">${wm < month ? 'Missed: its payday has passed' : due.some((d) => d.job === j && d.month === wm) ? 'Payday has come' : `Payday is the ${j.payday}.`}</span></span></button>`).join('')}
         ${j.payments.map((p) => {
           const note = salaryNote(j, p.month, p.amount, p.hours);
           return `<button class="row" data-act="salary-payment" data-id="${p.id}">
@@ -991,16 +994,17 @@ async function submitSalaryJob(form) {
  * The monthly question for one job: did the salary stay the same, go up, or go down? Same
  * files last month's amount; up or down asks for the new one. The first month just asks.
  */
-function openSalaryPrompt(jobId, { asked = false } = {}) {
+function openSalaryPrompt(jobId, { asked = false, month = thisMonth() } = {}) {
   const job = salaryJob(jobId);
   if (!job) return;
-  const month = thisMonth();
   const last = job.payments.find((p) => p.month < month) ?? null;
   const c = job.currency;
-  const sheet = openSheet(`<form data-form="salary" data-job="${job.id}" data-mode="${last ? '' : 'amount'}" ${asked ? 'data-asked="1"' : ''}>
-    <h2>${esc(job.name)} salary</h2>
+  const missed = month < thisMonth();
+  const sheet = openSheet(`<form data-form="salary" data-job="${job.id}" data-month="${month}" data-mode="${last ? '' : 'amount'}" ${asked ? 'data-asked="1"' : ''}>
+    <h2>${esc(job.name)} salary${missed ? `, ${esc(monthName(month))}` : ''}</h2>
+    ${missed ? `<div class="hint" style="margin-bottom:6px">Its payday passed without it being filed.</div>` : ''}
     <div class="subtitle">${esc(monthLabel(month))}${last ? ` · last was ${esc(money(last.amount, c))} in ${esc(monthLabel(last.month))}` : ''}</div>
-    ${job.tracksHours ? `<div class="field"><label>Hours worked this month</label>
+    ${job.tracksHours ? `<div class="field"><label>Hours worked in ${esc(monthName(month))}</label>
       <input class="input amount" name="hours" inputmode="decimal" required placeholder="0" value="${last?.hours ?? ''}"></div>` : ''}
     ${last ? `<div class="field"><label>Did it stay the same?</label></div>
       <div class="choices" data-role="ask">
@@ -1016,7 +1020,7 @@ function openSalaryPrompt(jobId, { asked = false } = {}) {
         <input class="input amount" name="amount" inputmode="decimal" placeholder="0.00"></div>
       <div class="hint" data-role="preview"></div>
     </div>
-    <div class="actions"><button type="button" class="btn" data-act="salary-later" data-id="${job.id}">Not paid yet</button>
+    <div class="actions"><button type="button" class="btn" data-act="salary-later" data-id="${job.id}" data-month="${month}">${missed ? 'Ask me later' : 'Not paid yet'}</button>
       <button class="btn primary" type="submit" ${last ? 'hidden' : ''}>File it</button></div>
   </form>`);
 
@@ -1032,11 +1036,11 @@ function openSalaryPrompt(jobId, { asked = false } = {}) {
 
 async function submitSalary(form) {
   const job = salaryJob(form.dataset.job);
-  const month = thisMonth();
+  const month = form.dataset.month;
   const last = job.payments.find((p) => p.month < month) ?? null;
   const mode = form.dataset.mode;
   const hours = form.hours ? parseAmount(form.hours.value) : null;
-  if (job.tracksHours && !(hours > 0)) return sheetProblem(form, 'How many hours did you work this month?');
+  if (job.tracksHours && !(hours > 0)) return sheetProblem(form, `How many hours did you work in ${monthName(month)}?`);
 
   const amount = mode === 'same' ? last.amount / 100 : parseAmount(form.amount.value);
   if (!(amount > 0)) return sheetProblem(form, 'The salary has to be a number more than zero.');
@@ -1080,8 +1084,8 @@ function askSalary() {
   if (!state.model || state.sheet) return;
   const today = dateValue(Date.now());
   const off = snoozed();
-  const next = salaryDue(m()).find((j) => off[j.id] !== today);
-  if (next) openSalaryPrompt(next.id, { asked: true });
+  const next = salaryDue(m()).find((d) => off[`${d.job.id}:${d.month}`] !== today);
+  if (next) openSalaryPrompt(next.job.id, { asked: true, month: next.month });
 }
 
 // ---------- Shopping list ----------
@@ -1251,10 +1255,12 @@ function renderShortcut() {
   const step = (n, html) => `<li style="margin-bottom:12px">${html}</li>`;
   const b = (t) => `<b>${esc(t)}</b>`;
 
+  const v = (t) => `<b class="tagline">${esc(t)}</b>`; // a variable you pick in Shortcuts
+
   frame('Apple Pay shortcut', `
     <section class="card pad">
-      <p style="margin-top:0">Pay with Apple Pay, and a list of your groups pops up straight away. Tap one and the payment is filed there, with the shop as its name. It reaches the PC on its next sync.</p>
-      <p class="hint" style="margin-bottom:0">Only payments made with a card in Wallet trigger it. The usual group for a shop comes first.</p>
+      <p style="margin-top:0">Pay with Apple Pay and two quick lists pop up: which group it goes in, then what it was. The shop is kept as who was paid. It reaches the PC on its next sync.</p>
+      <p class="hint" style="margin-bottom:0">Only payments made with a card in Wallet trigger it. The group and title you used last time at a shop come first.</p>
     </section>
 
     <div class="section"><span>1 · Your capture key</span></div>
@@ -1268,21 +1274,30 @@ function renderShortcut() {
       ${copyRow('Address', api.CAPTURE_URL, 'copy-url')}
     </section>
 
-    <div class="section"><span>2 · Make the automation</span></div>
+    <div class="section"><span>2 · What it was: your quick list</span></div>
+    <section class="card pad">
+      <div class="people-pick" style="margin-top:0">${m().quickTitles.map((t) => `<span class="pick-chip title-chip">${esc(t.name)}
+        <button type="button" data-act="title-delete" data-name="${esc(t.name)}" aria-label="Remove ${esc(t.name)}">${icon('close', 's14')}</button></span>`).join('')}</div>
+      <form class="addrow" data-form="title-add" style="margin-top:12px;display:flex;gap:8px">
+        <input class="input" name="name" autocomplete="off" placeholder="Add one: Pharmacy, Coffee…">
+        <button class="btn primary" type="submit" style="flex:none">Add</button>
+      </form>
+      <p class="hint" style="margin-bottom:0">The second pop-up offers these, then ${esc('＋ Something new…')}: a title typed there joins this list too.</p>
+    </section>
+
+    <div class="section"><span>3 · Make the automation</span></div>
     <section class="card pad"><ol style="margin:0;padding-left:20px;line-height:1.5">
-      ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Wallet')} (older iOS: ${b('Transaction')}). Pick the cards to watch and leave the categories and merchants on ${b('Any')}. Choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
-      ${step(2, `Add ${b('Get Contents of URL')}. Paste the ${b('Address')}. Tap the arrow to show more: ${b('Method')} ${b('POST')}, ${b('Request Body')} ${b('JSON')}, and add three Text fields:
-        <br>${b('key')} = paste your capture key
-        <br>${b('amount')} = ${b('Shortcut Input')} → ${b('Amount')}
-        <br>${b('merchant')} = ${b('Shortcut Input')} → ${b('Merchant')}`)}
-      ${step(3, `Add ${b('Split Text')}, split ${b('Contents of URL')} by ${b('New Lines')}.`)}
-      ${step(4, `Add ${b('Choose from List')} on the split text. Set its prompt to "Which group?" and leave ${b('Select Multiple')} off.`)}
-      ${step(5, `Add another ${b('Get Contents of URL')}, set up exactly like step 2, with two more Text fields:
-        <br>${b('choice')} = ${b('Selected Item')} from Choose from List (older iOS: ${b('Chosen Item')})
-        <br>${b('card')} = ${b('Shortcut Input')} → ${b('Card or Pass')}`)}
-      ${step(6, `Add ${b('Show Notification')} with the ${b('Contents of URL')} from step 5. It says what was filed.`)}
+      ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Wallet')}. Pick the cards to watch and leave the categories and merchants on ${b('Any')}. Choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
+      ${step(2, `${b('Get Contents of URL')}: paste the ${b('Address')}; ${b('Method')} ${b('POST')}, ${b('Request Body')} ${b('JSON')}, with Text fields
+        ${b('key')} = your capture key, ${b('amount')} = ${v('Amount')}, ${b('merchant')} = ${v('Merchant')} (both from ${b('Shortcut Input')}).`)}
+      ${step(3, `${b('Split Text')} the ${v('Contents of URL')} by ${b('New Lines')}, then ${b('Choose from List')} with the prompt "Which group?" (${b('Select Multiple')} off), then ${b('Set Variable')} ${b('Group')} to ${v('Selected Item')}.`)}
+      ${step(4, `Another ${b('Get Contents of URL')} like step 2, with Text fields ${b('key')}, ${b('merchant')} = ${v('Merchant')}, and ${b('list')} = ${b('titles')}.`)}
+      ${step(5, `${b('Split Text')} by ${b('New Lines')}, ${b('Choose from List')} with the prompt "What was it?", then ${b('Set Variable')} ${b('Title')} to ${v('Selected Item')}.`)}
+      ${step(6, `For ${esc('＋ Something new…')}: ${b('If')} ${v('Title')} ${b('contains')} ${b('Something new')}: ${b('Ask for Input')} "What was it?", then ${b('Set Variable')} ${b('Title')} to ${v('Provided Input')}. ${b('End If')}.`)}
+      ${step(7, `A last ${b('Get Contents of URL')} like step 2, with Text fields ${b('key')}, ${b('amount')} = ${v('Amount')}, ${b('merchant')} = ${v('Merchant')}, ${b('card')} = ${v('Card or Pass')}, ${b('choice')} = ${v('Group')}, ${b('title')} = ${v('Title')}.`)}
+      ${step(8, `${b('Show Notification')} with that last ${v('Contents of URL')}. It says what was filed, and if Wallet sent no shop name.`)}
     </ol>
-    <p class="hint" style="margin-bottom:0">Dismissing the list files nothing. If a payment does not show up, the notification says why.</p></section>`, { back: '#/' });
+    <p class="hint" style="margin-bottom:0">Dismissing a list files nothing. If a payment does not show up, the notification says why.</p></section>`, { back: '#/' });
 }
 
 async function copy(text, what) {
@@ -1356,7 +1371,7 @@ document.addEventListener('click', async (event) => {
       openLoan(p.loan.id);
     },
     'salary-job': () => openSalaryJob(el.dataset.id),
-    'salary-ask': () => openSalaryPrompt(el.dataset.id),
+    'salary-ask': () => openSalaryPrompt(el.dataset.id, { month: el.dataset.month }),
     'salary-payment': () => openSalaryPayment(el.dataset.id),
     'salary-same': () => {
       const form = el.closest('form');
@@ -1373,7 +1388,7 @@ document.addEventListener('click', async (event) => {
     },
     'salary-later': () => {
       const off = snoozed();
-      off[el.dataset.id] = dateValue(Date.now());
+      off[`${el.dataset.id}:${el.dataset.month}`] = dateValue(Date.now());
       try { localStorage.setItem(SNOOZE, JSON.stringify(off)); } catch { /* private mode */ }
       const asked = el.closest('form')?.dataset.asked;
       closeSheet();
@@ -1421,6 +1436,10 @@ document.addEventListener('click', async (event) => {
       render();
     },
     'copy-key': () => copy(localStorage.getItem(CAPTURE_KEY) ?? '', 'Capture key'),
+    'title-delete': async () => {
+      if (!confirm(`Take ${el.dataset.name} off the list? Expenses already filed keep it.`)) return;
+      await save(deleteQuickTitle(m(), el.dataset.name), `Removed ${el.dataset.name}.`);
+    },
     'copy-url': () => copy(api.CAPTURE_URL, 'Address'),
     'new-key': async () => {
       let had = null;
@@ -1515,6 +1534,11 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
     if (form.dataset.form === 'payment') await submitPayment(form);
     if (form.dataset.form === 'person') await submitAddPerson(form);
+    if (form.dataset.form === 'title-add') {
+      let changes;
+      try { changes = addQuickTitle(m(), form.name.value); } catch (e) { return toast(e.message, true); }
+      await save(changes, `Added ${form.name.value.trim()}.`);
+    }
     if (form.dataset.form === 'salary-job') await submitSalaryJob(form);
     if (form.dataset.form === 'salary') await submitSalary(form);
     if (form.dataset.form === 'salary-payment') await submitSalaryPayment(form);

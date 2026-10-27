@@ -201,5 +201,8 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .pick-chip { height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--border-default); background: var(--surface-raised); color: var(--text-primary); font: inherit; font-size: 13.5px; }
 .pick-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
+.title-chip { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; line-height: 30px; }
+.title-chip button { border: 0; background: none; color: var(--text-muted); width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; }
+
 /* Hidden means hidden, whatever display a class gives the element. */
 [hidden] { display: none !important; }

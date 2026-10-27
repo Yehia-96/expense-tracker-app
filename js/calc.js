@@ -103,6 +103,7 @@ export function buildModel(rows) {
   return {
     projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments,
     rawTags: tagRows, entryTagRows, shopping: shoppingList(rows), salary: salaryModel(rows),
+    quickTitles: quickTitleList(rows),
   };
 }
 
@@ -155,7 +156,7 @@ function salaryModel(rows) {
     const d = r.data;
     return {
       id: d.Id, name: d.Name, currency: Number(d.Currency ?? Currency.EUR), payday: Number(d.Payday ?? 1),
-      tracksHours: bool(d.TracksHours), position: Number(d.Position ?? 0), raw: d,
+      tracksHours: bool(d.TracksHours), position: Number(d.Position ?? 0), createdAt: instantMs(d.CreatedAt), raw: d,
       payments: payments.filter((p) => p.jobId === d.Id).sort((a, b) => b.month.localeCompare(a.month)),
     };
   }).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
@@ -163,12 +164,33 @@ function salaryModel(rows) {
   return { jobs, payments };
 }
 
-/** The jobs whose payday this month has come and that have no salary filed for it yet. */
+/** The end of a job's payday in a month: the 31st of a 30-day month is its last day. */
+function paydayEnd(job, year, monthIndex) {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return new Date(year, monthIndex, Math.min(job.payday, lastDay), 23, 59, 59, 999).getTime();
+}
+
+/**
+ * The salaries to ask about, as { job, month }, in job order. This month's once its payday has
+ * come; and last month's when it was never filed, so a payday missed at the end of a month is
+ * still asked about in the next. Not for a month that ended before the job was added.
+ */
 export function salaryDue(model, now = Date.now()) {
   const d = new Date(now);
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  const month = monthKey(now);
-  return model.salary.jobs.filter((j) => d.getDate() >= Math.min(j.payday, lastDay) && !j.payments.some((p) => p.month === month));
+  const due = [];
+  for (const job of model.salary.jobs) {
+    const filed = (month) => job.payments.some((p) => p.month === month);
+
+    const last = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+    const lastMonth = monthKey(last.getTime());
+    if (!filed(lastMonth) && job.createdAt <= paydayEnd(job, last.getFullYear(), last.getMonth())) {
+      due.push({ job, month: lastMonth });
+    }
+
+    const month = monthKey(now);
+    if (!filed(month) && now >= paydayEnd(job, d.getFullYear(), d.getMonth()) - 86_399_999) due.push({ job, month });
+  }
+  return due;
 }
 
 /** The salary before `month`: what a new one is compared with. */
@@ -179,6 +201,19 @@ export function salaryChange(previous, amount) {
   if (!previous) return null;
   const diff = amount - previous.amount;
   return { diff, percent: previous.amount ? (diff / previous.amount) * 100 : null };
+}
+
+// ---------- Quick titles for the Apple Pay shortcut (phone only; the capture function reads them) ----------
+
+/** What the shortcut offers before any are kept: the capture function's DEFAULT_TITLES. */
+export const DEFAULT_TITLES = ['Groceries', 'Takeout', 'Snack'];
+
+/** The titles in order; the starting three, not yet stored (id null), until the list is changed. */
+function quickTitleList(rows) {
+  const stored = rows.filter((r) => r.tbl === 'QuickTitles' && r.data)
+    .map((r) => ({ id: r.data.Id, name: r.data.Name, position: Number(r.data.Position ?? 0) }))
+    .sort((a, b) => a.position - b.position);
+  return stored.length ? stored : DEFAULT_TITLES.map((name, position) => ({ id: null, name, position }));
 }
 
 /** Cents per kilogram, for things sold by weight. */

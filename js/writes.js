@@ -453,13 +453,13 @@ export function salaryNote(job, month, amount, hours) {
 export const salaryDescription = (job, month, amount, hours) =>
   [`Salary · ${job.name}, ${monthLabel(month)}`, salaryNote(job, month, amount, hours)].filter(Boolean).join(' · ');
 
-export function addSalaryJob(model, { name, currency, payday, tracksHours }) {
+export function addSalaryJob(model, { name, currency, payday, tracksHours }, now = Date.now()) {
   const id = newId();
   const last = Math.max(-1, ...model.salary.jobs.map((j) => j.position));
   return [{
     tbl: 'SalaryJobs', id, data: {
       Id: id, Name: name.trim(), Currency: currency, Payday: payday, TracksHours: tracksHours ? 1 : 0,
-      Position: last + 1, CreatedAt: nowTicks(),
+      Position: last + 1, CreatedAt: msToTicks(now),
     },
   }];
 }
@@ -505,4 +505,41 @@ export function deleteSalary(payment) {
     { tbl: 'SalaryPayments', id: payment.id, data: null },
     ...(payment.cashId ? [{ tbl: 'CashTransactions', id: payment.cashId, data: null }] : []),
   ];
+}
+
+// ---------- Quick titles for the Apple Pay shortcut ----------
+
+/** The starting three written down, the first time the list is changed, so they can be removed one by one. */
+function storedTitles(model, changes) {
+  return model.quickTitles.map((t) => {
+    if (t.id) return t;
+    const id = newId();
+    changes.push({ tbl: 'QuickTitles', id, data: { Id: id, Name: t.name, Position: t.position, CreatedAt: nowTicks() } });
+    return { ...t, id };
+  });
+}
+
+/** A title the shortcut's second pop-up offers from now on. */
+export function addQuickTitle(model, name) {
+  const tidy = (name || '').trim();
+  if (!tidy) throw new Error('Type the title first.');
+  const known = model.quickTitles.find((t) => t.name.toLowerCase() === tidy.toLowerCase());
+  if (known) throw new Error(`${known.name} is already on the list.`);
+
+  const changes = [];
+  const titles = storedTitles(model, changes);
+  const id = newId();
+  changes.push({
+    tbl: 'QuickTitles', id,
+    data: { Id: id, Name: tidy, Position: Math.max(-1, ...titles.map((t) => t.position)) + 1, CreatedAt: nowTicks() },
+  });
+  return changes;
+}
+
+/** Takes a title off the list. Expenses already filed with it keep it. */
+export function deleteQuickTitle(model, name) {
+  const changes = [];
+  const gone = storedTitles(model, changes).find((t) => t.name === name);
+  if (!gone) return changes;
+  return [...changes.filter((c) => c.id !== gone.id), { tbl: 'QuickTitles', id: gone.id, data: null }];
 }
