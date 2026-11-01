@@ -561,12 +561,15 @@ export function addRule({ groupId, title, amount, unit, interval, startsOn, ends
   }];
 }
 
-/** Changes what a rule produces from now on, as the desktop's UpdateRuleAsync: entries already booked stay. */
-export function updateRule(rule, { title, amount, unit, interval, endsOn = null, note }) {
+/**
+ * Changes what a rule produces from now on, as the desktop's UpdateRuleAsync: entries already
+ * booked stay, in the group they were booked into, even when the rule moves to another group.
+ */
+export function updateRule(rule, { title, amount, unit, interval, endsOn = null, note, groupId = rule.groupId }) {
   if (!(interval >= 1)) throw new Error('It has to repeat at least every one.');
   return [{
     tbl: 'RecurringRules', id: rule.id, data: {
-      ...rule.raw, Title: title.trim(), Amount: toCents(amount), Unit: unit, Interval: interval,
+      ...rule.raw, GroupId: groupId, Title: title.trim(), Amount: toCents(amount), Unit: unit, Interval: interval,
       EndsOn: endsOn === null ? null : msToTicks(endsOn), Note: note?.trim() ? note.trim() : null,
     },
   }];

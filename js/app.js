@@ -981,21 +981,24 @@ function openRule(id) {
     </div>`);
 }
 
-/** Adding a rule in a project, or (with `ruleId`) changing one; its group and start stay, as on the PC. */
+/** Adding a rule in a project, or (with `ruleId`) changing one: its start stays, as on the PC; its group can move within the project. */
 function openRuleForm(projectId, ruleId = null) {
   const editing = ruleId ? m().recurring.find((x) => x.id === ruleId) : null;
   const pid = editing?.group?.projectId ?? projectId;
   const project = m().projects.get(pid);
   const groups = groupsOf(pid).filter((g) => g.kind === GroupKind.Expense && !isRepaymentGroup(g));
   if (!editing && !groups.length) return toast('Make an expense group in this project first.', true);
+  // A rule may sit in a group the list leaves out (the PC lets it): it stays a choice.
+  if (editing?.group && !groups.includes(editing.group)) groups.unshift(editing.group);
   const value = (v) => esc(v ?? '');
   const unit = editing?.unit ?? RecurrenceUnit.Month;
 
   openSheet(`<form data-form="rule" data-project="${pid}" ${editing ? `data-id="${editing.id}"` : ''}>
     <h2>${editing ? 'Edit repeating expense' : 'New repeating expense'}</h2>
     <div class="subtitle">In ${esc(project.name)}. Already booked entries stay as they are.</div>
-    ${editing ? '' : `<div class="field"><label>Group</label><select class="input" name="group">${groups.map((g) =>
-      `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>`}
+    <div class="field"><label>Group</label><select class="input" name="group">${groups.map((g) =>
+      `<option value="${g.id}" ${g.id === editing?.groupId ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>
+      ${editing ? '<div class="hint" data-role="move"></div>' : ''}</div>
     <div class="field"><label>What is it?</label><input class="input" name="title" required autocomplete="off" placeholder="Rent" value="${value(editing?.title)}"></div>
     <div class="field"><label>Amount (${SYMBOL[project.currency]})</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"
       value="${editing ? (editing.amount / 100).toFixed(2) : ''}"></div>
@@ -1012,6 +1015,16 @@ function openRuleForm(projectId, ruleId = null) {
     <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button>
       <button class="btn primary" type="submit">${editing ? 'Save changes' : 'Add it'}</button></div>
   </form>`);
+
+  if (editing) {
+    const form = document.querySelector('form[data-form=rule]');
+    form.group.addEventListener('change', () => {
+      const to = m().groups.get(form.group.value);
+      form.querySelector('[data-role=move]').textContent = to && to.id !== editing.groupId
+        ? `From now on it books into ${to.name}. What it already booked stays in ${editing.group?.name ?? 'its old group'}.`
+        : '';
+    });
+  }
 }
 
 async function submitRule(form) {
@@ -1026,12 +1039,14 @@ async function submitRule(form) {
   const endsOn = form.ends.value ? dayToMs(form.ends.value) + 86_399_000 : null;
   if (endsOn !== null && endsOn < starts) return sheetProblem(form, 'It ends before it starts.');
 
-  const values = { title: form.title.value, amount, unit: Number(form.unit.value), interval, endsOn, note: form.note.value };
+  const values = {
+    title: form.title.value, amount, unit: Number(form.unit.value), interval, endsOn, note: form.note.value, groupId: form.group.value,
+  };
   if (editing) {
     await save(updateRule(editing, values), `Saved ${values.title.trim()}.`);
     return openRule(editing.id);
   }
-  await save(addRule({ ...values, groupId: form.group.value, startsOn: starts }), `Added ${values.title.trim()}.`);
+  await save(addRule({ ...values, startsOn: starts }), `Added ${values.title.trim()}.`);
 }
 
 // ---------- Conversions ----------
