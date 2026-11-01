@@ -15,6 +15,7 @@ export function money(cents, currency) {
 }
 export const GroupKind = Object.freeze({ Expense: 0, Loan: 1, Conversion: 2 });
 export const Direction = Object.freeze({ Borrowed: 0, Lent: 1 });
+export const RecurrenceUnit = Object.freeze({ Day: 0, Week: 1, Month: 2, Year: 3 });
 export const Period = Object.freeze({ Total: 0, Week: 1, Month: 2, Year: 3 });
 
 const TICKS_AT_UNIX_EPOCH = 621355968000000000n;
@@ -104,6 +105,11 @@ export function buildModel(rows) {
     projects, groups, people, entries, entryById, expenses, loans, payments, transactions, attachments,
     rawTags: tagRows, entryTagRows, shopping: shoppingList(rows), salary: salaryModel(rows),
     quickTitles: quickTitleList(rows),
+    recurring: by('RecurringRules').map((r) => ({
+      id: r.Id, groupId: r.GroupId, group: groups.get(r.GroupId) ?? null, title: r.Title, amount: cents(r.Amount),
+      note: r.Note, unit: Number(r.Unit), interval: Number(r.Interval ?? 1), startsOn: ticksToMs(r.StartsOn),
+      endsOn: ticksToMs(r.EndsOn), nextDueOn: ticksToMs(r.NextDueOn), isActive: bool(r.IsActive), raw: r,
+    })).sort((a, b) => a.nextDueOn - b.nextDueOn),
   };
 }
 
@@ -201,6 +207,35 @@ export function salaryChange(previous, amount) {
   if (!previous) return null;
   const diff = amount - previous.amount;
   return { diff, percent: previous.amount ? (diff / previous.amount) * 100 : null };
+}
+
+// ---------- Repeating entries (booked by the PC; the phone keeps the rules) ----------
+
+/**
+ * The due date after `ms`, stepped exactly as the desktop's RecurringRule.AdvanceDueDate steps
+ * a DateTimeOffset read back in local time: days and weeks are whole 24 hours; months and years
+ * move the clock time in the offset it had, clamping to the end of a short month, so a rule due
+ * on the 31st falls on 30 November, then on the 30th from there on.
+ */
+export function advanceDue(ms, unit, interval) {
+  if (unit === RecurrenceUnit.Day || unit === RecurrenceUnit.Week) {
+    return ms + (unit === RecurrenceUnit.Week ? 7 : 1) * interval * 86_400_000;
+  }
+  const offset = -new Date(ms).getTimezoneOffset() * 60_000;
+  const clock = new Date(ms + offset); // the wall clock, read with getUTC*
+  const months = unit === RecurrenceUnit.Year ? 12 * interval : interval;
+  const year = clock.getUTCFullYear() + Math.floor((clock.getUTCMonth() + months) / 12);
+  const month = (clock.getUTCMonth() + months) % 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const moved = Date.UTC(year, month, Math.min(clock.getUTCDate(), lastDay),
+    clock.getUTCHours(), clock.getUTCMinutes(), clock.getUTCSeconds(), clock.getUTCMilliseconds());
+  return moved - offset;
+}
+
+/** "Every month", "Every 2 weeks". */
+export function frequencyText(unit, interval) {
+  const name = ['day', 'week', 'month', 'year'][unit] ?? 'month';
+  return interval === 1 ? `Every ${name}` : `Every ${interval} ${name}s`;
 }
 
 // ---------- Quick titles for the Apple Pay shortcut (phone only; the capture function reads them) ----------

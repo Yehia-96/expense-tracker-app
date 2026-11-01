@@ -5,10 +5,12 @@ import * as store from './store.js';
 import {
   buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled, perKg,
   Currencies, GroupKind, Direction, Period, SYMBOL, money, monthKey, salaryDue, previousSalary, salaryChange,
+  RecurrenceUnit, frequencyText, advanceDue,
 } from './calc.js';
 import {
   addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
-  normalizeName, addPerson, addQuickTitle, deleteQuickTitle, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  normalizeName, addPerson, addQuickTitle, deleteQuickTitle, addRule, updateRule, skipRule, setRuleActive, deleteRule,
+  addConversion, updateConversion, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -204,6 +206,7 @@ function render() {
   const r = route();
   if (r.kind === 'p' && m().projects.has(r.id)) return renderProject(m().projects.get(r.id));
   if (r.kind === 'g' && m().groups.has(r.id)) return renderGroup(m().groups.get(r.id));
+  if (r.kind === 'r' && m().projects.has(r.id)) return renderRepeating(m().projects.get(r.id));
   if (r.kind === 'people') return renderPeople();
   if (r.kind === 'shortcut') return renderShortcut();
   if (r.kind === 'shopping') return renderShopping();
@@ -363,7 +366,22 @@ function renderProject(project) {
       ${moneyHtml(spentInProject(project.id), c, 'big')}
     </section>
     <div class="section"><span>Groups</span></div>
-    <div class="card list">${rows || '<div class="empty">No groups yet.</div>'}</div>`, { back: '#/', fab: true });
+    <div class="card list">${rows || '<div class="empty">No groups yet.</div>'}</div>
+    <div class="section"><span>Repeating</span></div>
+    <div class="card list">${repeatingRow(project)}</div>`, { back: '#/', fab: true });
+}
+
+const rulesOf = (projectId) => m().recurring.filter((r) => r.group?.projectId === projectId);
+
+function repeatingRow(project) {
+  const rules = rulesOf(project.id);
+  const next = rules.find((r) => r.isActive);
+  return `<button class="row" data-go="#/r/${project.id}">
+    <span class="glyph">${icon('clock')}</span>
+    <span class="main"><span class="title">Repeating expenses</span>
+      <span class="sub">${rules.length ? `${rules.length === 1 ? '1 rule' : `${rules.length} rules`}${next ? ` · next ${esc(next.title)}, ${shortFmt.format(new Date(next.nextDueOn))}` : ' · all paused'}` : 'Rent, subscriptions: anything that repeats'}</span></span>
+    ${icon('chev', 'chev s14')}
+  </button>`;
 }
 
 function windowLabel(group, t) {
@@ -425,15 +443,15 @@ function renderGroup(group) {
 
   if (group.kind === GroupKind.Conversion) {
     const rows = [...entries].sort((a, b) => b.occurredOn - a.occurredOn).map((e) => `
-      <div class="row">
+      <button class="row" data-act="conversion" data-id="${e.id}">
         <span class="main"><span class="title">${esc(e.title)}</span>
           <span class="sub">${shortFmt.format(new Date(e.occurredOn))}${e.payee ? ` · with ${esc(e.payee)}` : ''}</span></span>
         <span class="end"><span class="amt row-amt">−${esc(money(e.amount, c))}</span>
           <div class="amt pos" style="font-size:13px">${e.exchangedAmount !== null ? `+${esc(money(e.exchangedAmount, e.exchangedCurrency))}` : ''}</div>
           ${e.exchangedAmount ? `<div class="sub muted" style="font-size:12px">${(e.exchangedAmount / e.amount).toFixed(2)} ${SYMBOL[e.exchangedCurrency]} per ${SYMBOL[c]}</div>` : ''}</span>
-      </div>`).join('');
-    return frame(group.name, `<div class="card list">${rows || '<div class="empty">No conversions yet.</div>'}</div>
-      <p class="hint" style="margin:12px 4px">Conversions are recorded on the PC.</p>`, { back, fab: true });
+      </button>`).join('');
+    return frame(group.name, `<div style="margin-bottom:12px"><button class="btn primary wide" data-act="conversion-new" data-group="${group.id}">${icon('plus')}Record a conversion</button></div>
+      <div class="card list">${rows || '<div class="empty">No conversions yet.</div>'}</div>`, { back, fab: true });
   }
 
   const t = groupTotals(m(), group);
@@ -499,6 +517,8 @@ function openAdd() {
       <button class="choice" data-act="expense" data-group="${group && group.kind === GroupKind.Expense && !isRepaymentGroup(group) ? group.id : ''}">
         <span class="glyph">${icon('receipt')}</span><span><b>An expense</b><span>Something paid for, with a receipt photo if you like</span></span></button>
       <button class="choice" data-act="moneyin"><span class="glyph">${icon('in')}</span><span><b>Money in</b><span>Salary, a transfer, cash you were given</span></span></button>
+      <button class="choice" data-act="conversion-new" data-group="${group && group.kind === GroupKind.Conversion ? group.id : ''}">
+        <span class="glyph">${icon('conversion')}</span><span><b>A conversion</b><span>Euros changed into pounds, or pounds into euros</span></span></button>
       <button class="choice" data-act="newloan" data-group="${group && group.kind === GroupKind.Loan ? group.id : ''}">
         <span class="glyph">${icon('loan')}</span><span><b>A loan</b><span>Money you borrowed, or lent to someone</span></span></button>
       <button class="choice" data-act="repay">
@@ -915,6 +935,172 @@ function openPerson(id) {
     }).join('') || '<div class="empty">No loans with them yet.</div>'}</div>
     <div class="actions"><button class="btn" data-act="close">Close</button>
       <button class="btn primary" data-act="newloan" data-person="${ledger.person.id}">${icon('plus')}New loan</button></div>`);
+}
+
+// ---------- Repeating expenses ----------
+
+/** "Every 2 weeks · next Mon 2 Nov", or why it is not next. */
+function ruleLine(r) {
+  const ended = r.endsOn && r.nextDueOn > r.endsOn;
+  return `${frequencyText(r.unit, r.interval)} · ${!r.isActive ? 'paused' : ended ? 'ended' : `next ${dayFmt.format(new Date(r.nextDueOn))}`}`;
+}
+
+function renderRepeating(project) {
+  const rules = rulesOf(project.id);
+  const c = project.currency;
+  frame('Repeating', `
+    <div style="margin-bottom:12px"><button class="btn primary wide" data-act="rule-new" data-project="${project.id}">${icon('plus')}Add a repeating expense</button></div>
+    <div class="card list">${rules.map((r) => `
+      <button class="row" data-act="rule" data-id="${r.id}">
+        <span class="main"><span class="title">${esc(r.title)}</span>
+          <span class="sub">${esc(r.group?.name ?? '')} · ${esc(ruleLine(r))}</span></span>
+        <span class="end">${moneyHtml(r.amount, c, `row-amt ${r.isActive ? '' : 'muted'}`)}</span>
+      </button>`).join('') || '<div class="empty">Nothing repeating in this project yet.</div>'}</div>
+    <p class="hint" style="margin:12px 4px">The PC books each one when it falls due, the next time it opens, and the entry reaches the phone on its next sync.</p>`,
+  { back: `#/p/${project.id}` });
+}
+
+function openRule(id) {
+  const r = m().recurring.find((x) => x.id === id);
+  if (!r) return;
+  const c = r.group?.project?.currency ?? 0;
+  openSheet(`<h2>${esc(r.title)}</h2>
+    <div class="subtitle">${esc(r.group?.name ?? '')} · ${esc(frequencyText(r.unit, r.interval))}</div>
+    <div>${moneyHtml(r.amount, c, 'big')}</div>
+    <div class="kv"><span>Next</span><span>${r.isActive ? esc(dateFmt.format(new Date(r.nextDueOn))) : 'Paused'}</span></div>
+    <div class="kv"><span>Started</span><span>${esc(dateFmt.format(new Date(r.startsOn)))}</span></div>
+    ${r.endsOn ? `<div class="kv"><span>Ends</span><span>${esc(dateFmt.format(new Date(r.endsOn)))}</span></div>` : ''}
+    ${r.note ? `<p class="sec">${esc(r.note)}</p>` : ''}
+    <div class="actions">
+      <button class="btn" data-act="rule-edit" data-id="${r.id}">${icon('pencil')}Edit</button>
+      <button class="btn" data-act="rule-pause" data-id="${r.id}">${r.isActive ? 'Pause' : 'Resume'}</button>
+    </div>
+    <div class="actions" style="margin-top:8px">
+      <button class="btn danger" data-act="rule-delete" data-id="${r.id}">${icon('close')}Delete</button>
+      ${r.isActive ? `<button class="btn" data-act="rule-skip" data-id="${r.id}">Skip the next one</button>` : ''}
+    </div>`);
+}
+
+/** Adding a rule in a project, or (with `ruleId`) changing one; its group and start stay, as on the PC. */
+function openRuleForm(projectId, ruleId = null) {
+  const editing = ruleId ? m().recurring.find((x) => x.id === ruleId) : null;
+  const pid = editing?.group?.projectId ?? projectId;
+  const project = m().projects.get(pid);
+  const groups = groupsOf(pid).filter((g) => g.kind === GroupKind.Expense && !isRepaymentGroup(g));
+  if (!editing && !groups.length) return toast('Make an expense group in this project first.', true);
+  const value = (v) => esc(v ?? '');
+  const unit = editing?.unit ?? RecurrenceUnit.Month;
+
+  openSheet(`<form data-form="rule" data-project="${pid}" ${editing ? `data-id="${editing.id}"` : ''}>
+    <h2>${editing ? 'Edit repeating expense' : 'New repeating expense'}</h2>
+    <div class="subtitle">In ${esc(project.name)}. Already booked entries stay as they are.</div>
+    ${editing ? '' : `<div class="field"><label>Group</label><select class="input" name="group">${groups.map((g) =>
+      `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>`}
+    <div class="field"><label>What is it?</label><input class="input" name="title" required autocomplete="off" placeholder="Rent" value="${value(editing?.title)}"></div>
+    <div class="field"><label>Amount (${SYMBOL[project.currency]})</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"
+      value="${editing ? (editing.amount / 100).toFixed(2) : ''}"></div>
+    <div class="two">
+      <div class="field"><label>Every</label><input class="input" name="interval" type="number" inputmode="numeric" min="1" value="${editing?.interval ?? 1}"></div>
+      <div class="field"><label>&nbsp;</label><select class="input" name="unit">${['Day(s)', 'Week(s)', 'Month(s)', 'Year(s)'].map((label, u) =>
+        `<option value="${u}" ${u === unit ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+    </div>
+    <div class="two">
+      ${editing ? '' : `<div class="field"><label>First on</label><input class="input" name="starts" type="date" value="${todayValue()}" required></div>`}
+      <div class="field"><label>Ends <span class="opt">(optional)</span></label><input class="input" name="ends" type="date" value="${editing?.endsOn ? dateValue(editing.endsOn) : ''}"></div>
+    </div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" value="${value(editing?.note)}"></div>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button>
+      <button class="btn primary" type="submit">${editing ? 'Save changes' : 'Add it'}</button></div>
+  </form>`);
+}
+
+async function submitRule(form) {
+  const amount = parseAmount(form.amount.value);
+  const interval = Number(form.interval.value);
+  if (!form.title.value.trim()) return sheetProblem(form, 'Say what it is.');
+  if (!(amount > 0)) return sheetProblem(form, 'The amount has to be a number more than zero.');
+  if (!(Number.isInteger(interval) && interval >= 1)) return sheetProblem(form, 'It has to repeat at least every 1.');
+  const editing = form.dataset.id ? m().recurring.find((x) => x.id === form.dataset.id) : null;
+  const starts = editing ? editing.startsOn : dayToMs(form.starts.value);
+  // An end date means through the end of that day.
+  const endsOn = form.ends.value ? dayToMs(form.ends.value) + 86_399_000 : null;
+  if (endsOn !== null && endsOn < starts) return sheetProblem(form, 'It ends before it starts.');
+
+  const values = { title: form.title.value, amount, unit: Number(form.unit.value), interval, endsOn, note: form.note.value };
+  if (editing) {
+    await save(updateRule(editing, values), `Saved ${values.title.trim()}.`);
+    return openRule(editing.id);
+  }
+  await save(addRule({ ...values, groupId: form.group.value, startsOn: starts }), `Added ${values.title.trim()}.`);
+}
+
+// ---------- Conversions ----------
+
+/** Recording money changed into the other currency, or (with `entryId`) changing one. */
+function openConversion(groupId, entryId = null) {
+  const editing = entryId ? m().entryById.get(entryId) : null;
+  const group = editing?.group ?? m().groups.get(groupId)
+    ?? [...m().groups.values()].find((g) => g.kind === GroupKind.Conversion && !g.archived && g.project && !g.project.archived);
+  if (!group) return toast('Make a conversion group on the PC first.', true);
+  const from = group.project.currency;
+  const into = editing?.exchangedCurrency ?? Currencies.find((c) => c !== from);
+  const value = (v) => esc(v ?? '');
+
+  const sheet = openSheet(`<form data-form="conversion" data-group="${group.id}" data-into="${into}" ${editing ? `data-entry="${editing.id}"` : ''}>
+    <h2>${editing ? 'Edit conversion' : 'Record a conversion'}</h2>
+    <div class="subtitle">${esc(group.name)} · ${CODE[from]} into ${CODE[into]}</div>
+    <div class="field"><label>What for?</label><input class="input" name="title" required autocomplete="off" placeholder="Cash for the trip" value="${value(editing?.title)}"></div>
+    <div class="two">
+      <div class="field"><label>Out (${SYMBOL[from]})</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"
+        value="${editing ? (editing.amount / 100).toFixed(2) : ''}"></div>
+      <div class="field"><label>In (${SYMBOL[into]})</label><input class="input amount" name="exchanged" inputmode="decimal" required placeholder="0.00"
+        value="${editing?.exchangedAmount ? (editing.exchangedAmount / 100).toFixed(2) : ''}"></div>
+    </div>
+    <div class="hint" data-role="rate"></div>
+    <div class="two">
+      <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${editing ? dateValue(editing.occurredOn) : todayValue()}" required></div>
+      <div class="field"><label>Quoted rate <span class="opt">(optional)</span></label><input class="input amount" name="rate" inputmode="decimal"
+        placeholder="1 ${CODE[from]} =" value="${editing?.quotedRate ?? ''}"></div>
+    </div>
+    <div class="field"><label>Converted with <span class="opt">(optional)</span></label><input class="input" name="payee" autocomplete="off" placeholder="Bureau on the corner" value="${value(editing?.payee)}"></div>
+    <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" value="${value(editing?.note)}"></div>
+    <div class="actions">${editing
+      ? `<button type="button" class="btn danger" data-act="delete-entry" data-id="${editing.id}">${icon('close')}Delete</button>`
+      : '<button type="button" class="btn" data-act="close">Cancel</button>'}
+      <button class="btn primary" type="submit">${editing ? 'Save changes' : 'Record it'}</button></div>
+  </form>`);
+
+  // What it actually came to, beside the rate quoted, as the PC shows it.
+  const form = sheet.querySelector('form');
+  const rate = () => {
+    const out = parseAmount(form.amount.value);
+    const got = parseAmount(form.exchanged.value);
+    const quoted = parseAmount(form.rate.value);
+    sheet.querySelector('[data-role=rate]').textContent = out > 0 && got > 0
+      ? `That works out at 1 ${CODE[from]} = ${(got / out).toFixed(2)} ${CODE[into]}${quoted > 0 ? `; you were quoted ${quoted}.` : '.'}`
+      : `Comes off your ${CASH_NAME[from]} cash and onto your ${CASH_NAME[into]} cash.`;
+  };
+  rate();
+  for (const input of [form.amount, form.exchanged, form.rate]) input.addEventListener('input', rate);
+}
+
+async function submitConversion(form) {
+  const amount = parseAmount(form.amount.value);
+  const exchanged = parseAmount(form.exchanged.value);
+  const quoted = form.rate.value.trim() ? parseAmount(form.rate.value) : null;
+  if (!form.title.value.trim()) return sheetProblem(form, 'Give the conversion a name.');
+  if (!(amount > 0)) return sheetProblem(form, 'The amount out has to be a number more than zero.');
+  if (!(exchanged > 0)) return sheetProblem(form, 'Say how much arrived in the other currency.');
+  if (quoted !== null && !(quoted > 0)) return sheetProblem(form, 'A rate has to be more than zero, or leave it blank.');
+
+  const editing = form.dataset.entry ? m().entryById.get(form.dataset.entry) : null;
+  const occurredOn = editing && form.date.value === dateValue(editing.occurredOn) ? editing.occurredOn : dayToMs(form.date.value);
+  const values = {
+    title: form.title.value, amount, exchangedAmount: exchanged, exchangedCurrency: Number(form.dataset.into),
+    quotedRate: quoted, occurredOn, payee: form.payee.value, note: form.note.value,
+  };
+  await save(editing ? updateConversion(editing, values) : addConversion({ ...values, groupId: form.dataset.group }),
+    editing ? `Saved ${values.title.trim()}.` : `Recorded ${values.title.trim()}.`);
 }
 
 // ---------- Salary ----------
@@ -1345,6 +1531,29 @@ document.addEventListener('click', async (event) => {
     newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
     'edit-loan': () => openNewLoan(null, null, el.dataset.id),
     'add-person': openAddPerson,
+    rule: () => openRule(el.dataset.id),
+    'rule-new': () => openRuleForm(el.dataset.project),
+    'rule-edit': () => openRuleForm(null, el.dataset.id),
+    'rule-skip': async () => {
+      const r = m().recurring.find((x) => x.id === el.dataset.id);
+      if (!r || !confirm(`Skip ${r.title} on ${dateFmt.format(new Date(r.nextDueOn))}? Nothing is booked for it.`)) return;
+      const next = advanceDue(r.nextDueOn, r.unit, r.interval);
+      await save(skipRule(r), `Skipped. The next one is ${dateFmt.format(new Date(next))}.`);
+      openRule(r.id);
+    },
+    'rule-pause': async () => {
+      const r = m().recurring.find((x) => x.id === el.dataset.id);
+      if (!r) return;
+      await save(setRuleActive(r, !r.isActive), r.isActive ? `${r.title} is paused.` : `${r.title} is back on.`);
+      openRule(r.id);
+    },
+    'rule-delete': async () => {
+      const r = m().recurring.find((x) => x.id === el.dataset.id);
+      if (!r || !confirm(`Delete ${r.title}? It stops repeating; entries it already booked stay.`)) return;
+      await save(deleteRule(r), `Deleted ${r.title}.`);
+    },
+    conversion: () => openConversion(null, el.dataset.id),
+    'conversion-new': () => openConversion(el.dataset.group),
     'pick-person': () => {
       const form = el.closest('form');
       form.who.value = el.dataset.name;
@@ -1534,6 +1743,8 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
     if (form.dataset.form === 'payment') await submitPayment(form);
     if (form.dataset.form === 'person') await submitAddPerson(form);
+    if (form.dataset.form === 'rule') await submitRule(form);
+    if (form.dataset.form === 'conversion') await submitConversion(form);
     if (form.dataset.form === 'title-add') {
       let changes;
       try { changes = addQuickTitle(m(), form.name.value); } catch (e) { return toast(e.message, true); }

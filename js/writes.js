@@ -1,7 +1,7 @@
 // Rows the phone creates, written exactly as the desktop stores them: every column present,
 // ids as upper-case GUIDs, money in cents, dates as .NET ticks (strings), flags as 0/1.
 // test/writes.test.mjs checks the column sets against rows the desktop wrote.
-import { msToTicks, GroupKind, Direction, money, remaining, previousSalary, salaryChange } from './calc.js';
+import { msToTicks, GroupKind, Direction, money, remaining, previousSalary, salaryChange, advanceDue } from './calc.js';
 
 export const LOAN_PAYMENT_GROUP = Object.freeze({ name: 'Loan payments', icon: 'Receipt', colorHex: '#F0A868' });
 
@@ -542,4 +542,81 @@ export function deleteQuickTitle(model, name) {
   const gone = storedTitles(model, changes).find((t) => t.name === name);
   if (!gone) return changes;
   return [...changes.filter((c) => c.id !== gone.id), { tbl: 'QuickTitles', id: gone.id, data: null }];
+}
+
+// ---------- Repeating entries: the rules, as the desktop's RecurringService writes them ----------
+// The PC books what a rule owes when it opens. The phone only keeps the rules: two devices
+// booking the same rule before they synced would file the rent twice.
+
+/** A new rule. It first falls due on the day it starts. */
+export function addRule({ groupId, title, amount, unit, interval, startsOn, endsOn = null, note }) {
+  if (!(interval >= 1)) throw new Error('It has to repeat at least every one.');
+  const id = newId();
+  return [{
+    tbl: 'RecurringRules', id, data: {
+      Id: id, GroupId: groupId, Title: title.trim(), Amount: toCents(amount), Note: note?.trim() ? note.trim() : null,
+      Unit: unit, Interval: interval, StartsOn: msToTicks(startsOn), EndsOn: endsOn === null ? null : msToTicks(endsOn),
+      NextDueOn: msToTicks(startsOn), IsActive: 1,
+    },
+  }];
+}
+
+/** Changes what a rule produces from now on, as the desktop's UpdateRuleAsync: entries already booked stay. */
+export function updateRule(rule, { title, amount, unit, interval, endsOn = null, note }) {
+  if (!(interval >= 1)) throw new Error('It has to repeat at least every one.');
+  return [{
+    tbl: 'RecurringRules', id: rule.id, data: {
+      ...rule.raw, Title: title.trim(), Amount: toCents(amount), Unit: unit, Interval: interval,
+      EndsOn: endsOn === null ? null : msToTicks(endsOn), Note: note?.trim() ? note.trim() : null,
+    },
+  }];
+}
+
+/** Moves the next due date on by one step without booking anything for the one skipped. */
+export function skipRule(rule) {
+  return [{ tbl: 'RecurringRules', id: rule.id, data: { ...rule.raw, NextDueOn: msToTicks(advanceDue(rule.nextDueOn, rule.unit, rule.interval)) } }];
+}
+
+export function setRuleActive(rule, active) {
+  return [{ tbl: 'RecurringRules', id: rule.id, data: { ...rule.raw, IsActive: active ? 1 : 0 } }];
+}
+
+/** Deletes a rule. What it already booked stays: those are expenses that happened. */
+export function deleteRule(rule) {
+  return [{ tbl: 'RecurringRules', id: rule.id, data: null }];
+}
+
+// ---------- Conversions: money changed from a project's currency into the other ----------
+
+const conversionFields = ({ amount, exchangedAmount, exchangedCurrency, quotedRate }) => ({
+  Amount: toCents(amount),
+  ExchangedAmount: toCents(exchangedAmount),
+  ExchangedCurrency: exchangedCurrency,
+  // Stored a million to one, as the desktop's NullableRateToScaledConverter, so no places are lost.
+  QuotedRate: Number(quotedRate) > 0 ? Math.round(Number(quotedRate) * 1_000_000) : null,
+});
+
+/** A conversion: `amount` left in the project's currency, `exchangedAmount` arrived in the other. */
+export function addConversion({ groupId, title, amount, exchangedAmount, exchangedCurrency, quotedRate, occurredOn, payee, note }) {
+  const id = newId();
+  return [{
+    tbl: 'Entries', id, data: {
+      ...expenseRow({ id, groupId, title, amountCents: toCents(amount), occurredOn, payee, note }),
+      ...conversionFields({ amount, exchangedAmount, exchangedCurrency, quotedRate }),
+    },
+  }];
+}
+
+export function updateConversion(entry, { title, amount, exchangedAmount, exchangedCurrency, quotedRate, occurredOn, payee, note }) {
+  return [{
+    tbl: 'Entries', id: entry.id, data: {
+      ...entry.raw,
+      Title: title.trim(),
+      OccurredOn: msToTicks(occurredOn),
+      Payee: payee?.trim() ? payee.trim() : null,
+      Note: note?.trim() ? note.trim() : null,
+      UpdatedAt: nowTicks(),
+      ...conversionFields({ amount, exchangedAmount, exchangedCurrency, quotedRate }),
+    },
+  }];
 }
