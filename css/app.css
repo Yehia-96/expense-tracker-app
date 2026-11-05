@@ -204,5 +204,8 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .title-chip { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; line-height: 30px; }
 .title-chip button { border: 0; background: none; color: var(--text-muted); width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; }
 
+.cash-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.cash-links .btn { height: 36px; padding: 0 6px; gap: 5px; font-size: 13px; }
+
 /* Hidden means hidden, whatever display a class gives the element. */
 [hidden] { display: none !important; }

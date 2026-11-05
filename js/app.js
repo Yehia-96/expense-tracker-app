@@ -5,12 +5,12 @@ import * as store from './store.js';
 import {
   buildModel, netPosition, groupTotals, peopleLedgers, remaining, paidSoFar, isSettled, perKg,
   Currencies, GroupKind, Direction, Period, SYMBOL, money, monthKey, salaryDue, previousSalary, salaryChange,
-  RecurrenceUnit, frequencyText, advanceDue,
+  RecurrenceUnit, frequencyText, advanceDue, cashFlow, CashSource,
 } from './calc.js';
 import {
   addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
   normalizeName, addPerson, addQuickTitle, deleteQuickTitle, addRule, updateRule, skipRule, setRuleActive, deleteRule,
-  addConversion, updateConversion, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
+  addConversion, updateConversion, correctCash, deleteCashRow, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
 } from './writes.js';
 
@@ -173,8 +173,8 @@ const openLoans = () => m().loans.filter((l) => !isSettled(l) && l.group?.projec
 // ---------- Routing and frame ----------
 
 function route() {
-  const [, kind, id] = (location.hash || '#/').split('/');
-  return { kind: kind || 'home', id };
+  const [, kind, id, sub] = (location.hash || '#/').split('/');
+  return { kind: kind || 'home', id, sub };
 }
 
 function renderTopbar() {
@@ -211,6 +211,7 @@ function render() {
   if (r.kind === 'shortcut') return renderShortcut();
   if (r.kind === 'shopping') return renderShopping();
   if (r.kind === 'salary') return renderSalary();
+  if (r.kind === 'cash' && Currencies.includes(Number(r.id))) return renderCash(Number(r.id), r.sub !== 'out');
   return renderHome();
 }
 
@@ -272,6 +273,11 @@ function balanceCard(currency) {
     ${kv('Spent so far', p.spentSoFar)}
     ${p.outstandingBorrowed ? kv('You owe', p.outstandingBorrowed, 'bor') : ''}
     ${p.outstandingLent ? kv('Owed to you', p.outstandingLent, 'lent') : ''}
+    <div class="cash-links">
+      <button class="btn" data-go="#/cash/${currency}/in">${icon('in', 's14')}In</button>
+      <button class="btn" data-go="#/cash/${currency}/out">${icon('out', 's14')}Out</button>
+      <button class="btn" data-act="correct" data-currency="${currency}">${icon('pencil', 's14')}Correct</button>
+    </div>
   </section>`;
 }
 
@@ -647,11 +653,11 @@ async function submitExpense(form) {
   }), `Added ${money(Math.round(amount * 100), group.project.currency)} to ${group.name}.`);
 }
 
-function openMoneyIn() {
+function openMoneyIn(currency = 0) {
   openSheet(`<form data-form="moneyin">
     <h2>Money in</h2><div class="subtitle">Added to your cash and filed under money in.</div>
     <div class="field"><label>Currency</label><select class="input" name="currency">
-      ${Currencies.map((c) => `<option value="${c}">${CODE[c]} · ${SYMBOL[c]}</option>`).join('')}</select></div>
+      ${Currencies.map((c) => `<option value="${c}" ${c === Number(currency) ? 'selected' : ''}>${CODE[c]} · ${SYMBOL[c]}</option>`).join('')}</select></div>
     <div class="two">
       <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required placeholder="0.00"></div>
       <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${todayValue()}" required></div>
@@ -935,6 +941,90 @@ function openPerson(id) {
     }).join('') || '<div class="empty">No loans with them yet.</div>'}</div>
     <div class="actions"><button class="btn" data-act="close">Close</button>
       <button class="btn primary" data-act="newloan" data-person="${ledger.person.id}">${icon('plus')}New loan</button></div>`);
+}
+
+// ---------- Money in, money out, corrections ----------
+
+const SOURCE_LABEL = ['Received', 'Correction', 'Expense', 'Loan repaid', 'Paid to you', 'Conversion', 'Loan taken', 'Lent out'];
+
+/** The money in and money out pages for one currency: everything that moved its cash. */
+function renderCash(currency, incoming) {
+  const rows = cashFlow(m(), currency, incoming);
+  const total = Math.abs(rows.reduce((sum, r) => sum + r.amount, 0));
+  const way = (label, dir, on) => `<button class="${on ? 'on' : ''}" data-go="#/cash/${currency}/${dir}">${label}</button>`;
+
+  frame(`${incoming ? 'Money in' : 'Money out'} · ${CODE[currency]}`, `
+    <section class="card pad" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <div><div class="sec" style="font-size:13px">Total ${incoming ? 'in' : 'out'}, ${rows.length === 1 ? '1 movement' : `${rows.length} movements`}</div>
+        <div class="amt big ${incoming ? 'pos' : ''}">${incoming ? '+' : '−'}${esc(money(total, currency))}</div></div>
+      <div class="seg" role="group" aria-label="Which way">${way('In', 'in', incoming)}${way('Out', 'out', !incoming)}</div>
+    </section>
+    <div class="two" style="margin-top:12px">
+      <button class="btn" data-act="moneyin" data-currency="${currency}">${icon('plus')}Money in</button>
+      <button class="btn" data-act="correct" data-currency="${currency}">${icon('pencil')}Correct</button>
+    </div>
+    <div class="card list" style="margin-top:12px">${rows.map((r) => `
+      <button class="row" data-act="cash-row" data-source="${r.source}" data-id="${r.id}">
+        <span class="main"><span class="title">${esc(r.description)}</span>
+          <span class="sub">${esc(shortFmt.format(new Date(r.occurredOn)))} · ${esc(SOURCE_LABEL[r.source])}${r.context ? ` · ${esc(r.context)}` : ''}</span></span>
+        <span class="end"><span class="amt row-amt ${r.amount > 0 ? 'pos' : ''}">${r.amount > 0 ? '+' : '−'}${esc(money(Math.abs(r.amount), currency))}</span></span>
+      </button>`).join('') || `<div class="empty">Nothing ${incoming ? 'in' : 'out'} yet.</div>`}</div>`, { back: '#/' });
+}
+
+/** Follows a row to what produced it, as the PC does; only money you recorded here can go from here. */
+function openCashRow(source, id) {
+  if (source === CashSource.Expense) return openEntry(id);
+  if (source === CashSource.Conversion) return openConversion(null, id);
+  if (source === CashSource.RepaymentMade || source === CashSource.RepaymentReceived) return openPayment(id);
+  if (source === CashSource.LoanTaken || source === CashSource.LoanGiven) return openLoan(id);
+
+  const salary = m().salary.payments.find((p) => p.cashId === id);
+  if (salary) return openSalaryPayment(salary.id);
+
+  const t = m().transactions.find((x) => x.id === id);
+  if (!t) return;
+  openSheet(`<h2>${esc(t.description)}</h2>
+    <div class="subtitle">${esc(SOURCE_LABEL[source])} · ${esc(dateFmt.format(new Date(t.occurredOn)))}</div>
+    <div>${moneyHtml(t.amount, t.currency, 'big')}</div>
+    <div class="actions">
+      <button class="btn danger" data-act="delete-cash" data-id="${t.id}">${icon('close')}Delete</button>
+      <button class="btn" data-act="close">Close</button>
+    </div>`);
+}
+
+/** Setting a balance to what you actually hold; the difference is filed as a correction. */
+function openCorrect(currency) {
+  const current = netPosition(m(), currency).cashOnHand;
+  const sheet = openSheet(`<form data-form="correct" data-currency="${currency}">
+    <h2>Correct your ${CASH_NAME[currency]} cash</h2>
+    <div class="subtitle">The app has ${esc(money(current, currency))}. Type what you actually hold if that is wrong.</div>
+    <div class="field"><label>What you hold (${SYMBOL[currency]})</label>
+      <input class="input amount" name="amount" inputmode="text" required value="${(current / 100).toFixed(2)}"></div>
+    <div class="field"><label>Why <span class="opt">(optional)</span></label><input class="input" name="reason" autocomplete="off" placeholder="Counted the wallet"></div>
+    <p class="hint" data-role="effect"></p>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Correct it</button></div>
+  </form>`);
+
+  const form = sheet.querySelector('form');
+  const effect = () => {
+    const amount = parseAmount(form.amount.value);
+    const difference = Math.round(amount * 100) - current;
+    sheet.querySelector('[data-role=effect]').textContent = Number.isNaN(amount) ? ''
+      : difference === 0 ? 'Nothing changes.'
+      : difference > 0 ? `Files +${money(difference, currency)} under money in as a correction.`
+      : `Files ${money(difference, currency)} under money out as a correction.`;
+  };
+  effect();
+  form.amount.addEventListener('input', effect);
+}
+
+async function submitCorrect(form) {
+  const actual = parseAmount(form.amount.value);
+  if (Number.isNaN(actual) || !form.amount.value.trim()) return sheetProblem(form, 'That needs to be a number.');
+  const currency = Number(form.dataset.currency);
+  const changes = correctCash(m(), { currency, actual, reason: form.reason.value });
+  if (!changes.length) { closeSheet(); return toast('Nothing changes: that is what the app has.'); }
+  await save(changes, `Your ${CASH_NAME[currency]} cash is now ${money(Math.round(actual * 100), currency)}.`);
 }
 
 // ---------- Repeating expenses ----------
@@ -1489,16 +1579,17 @@ function renderShortcut() {
     <div class="section"><span>3 · Make the automation</span></div>
     <section class="card pad"><ol style="margin:0;padding-left:20px;line-height:1.5">
       ${step(1, `Open ${b('Shortcuts')} → ${b('Automation')} → ${b('+')} → ${b('Wallet')}. Pick the cards to watch and leave the categories and merchants on ${b('Any')}. Choose ${b('Run Immediately')}, then ${b('Next')} → ${b('New Blank Automation')}.`)}
+      ${step(1, `Optional, for when there is no signal, right at the top: ${b('Repeat')} ${b('6')} times, and inside it ${b('If')} ${b('Online')} ${b('does not have any value')}: ${b('Get Current IP Address')} (${b('External')}), ${b('Set Variable')} ${b('Online')} to it, then another ${b('If')} ${b('Online')} ${b('does not have any value')}: ${b('Wait')} ${b('10')} seconds. After ${b('End Repeat')}: ${b('If')} ${b('Online')} ${b('does not have any value')}: ${b('Show Notification')} "Not filed: no internet" with ${v('Amount')} and ${v('Merchant')}, then ${b('Stop This Shortcut')}.`)}
       ${step(2, `${b('Get Contents of URL')}: paste the ${b('Address')}; ${b('Method')} ${b('POST')}, ${b('Request Body')} ${b('JSON')}, with Text fields
         ${b('key')} = your capture key, ${b('amount')} = ${v('Amount')}, ${b('merchant')} = ${v('Merchant')} (both from ${b('Shortcut Input')}).`)}
       ${step(3, `${b('Split Text')} the ${v('Contents of URL')} by ${b('New Lines')}, then ${b('Choose from List')} with the prompt "Which group?" (${b('Select Multiple')} off), then ${b('Set Variable')} ${b('Group')} to ${v('Selected Item')}.`)}
-      ${step(4, `Another ${b('Get Contents of URL')} like step 2, with Text fields ${b('key')}, ${b('merchant')} = ${v('Merchant')}, and ${b('list')} = ${b('titles')}.`)}
+      ${step(4, `Another ${b('Get Contents of URL')} like the first one, with Text fields ${b('key')}, ${b('merchant')} = ${v('Merchant')}, and ${b('list')} = ${b('titles')}.`)}
       ${step(5, `${b('Split Text')} by ${b('New Lines')}, ${b('Choose from List')} with the prompt "What was it?", then ${b('Set Variable')} ${b('Title')} to ${v('Selected Item')}.`)}
       ${step(6, `For ${esc('＋ Something new…')}: ${b('If')} ${v('Title')} ${b('contains')} ${b('Something new')}: ${b('Ask for Input')} "What was it?", then ${b('Set Variable')} ${b('Title')} to ${v('Provided Input')}. ${b('End If')}.`)}
-      ${step(7, `A last ${b('Get Contents of URL')} like step 2, with Text fields ${b('key')}, ${b('amount')} = ${v('Amount')}, ${b('merchant')} = ${v('Merchant')}, ${b('card')} = ${v('Card or Pass')}, ${b('choice')} = ${v('Group')}, ${b('title')} = ${v('Title')}.`)}
+      ${step(7, `A last ${b('Get Contents of URL')} like the first one, with Text fields ${b('key')}, ${b('amount')} = ${v('Amount')}, ${b('merchant')} = ${v('Merchant')}, ${b('card')} = ${v('Card or Pass')}, ${b('choice')} = ${v('Group')}, ${b('title')} = ${v('Title')}.`)}
       ${step(8, `${b('Show Notification')} with that last ${v('Contents of URL')}. It says what was filed, and if Wallet sent no shop name.`)}
     </ol>
-    <p class="hint" style="margin-bottom:0">Dismissing a list files nothing. If a payment does not show up, the notification says why.</p></section>`, { back: '#/' });
+    <p class="hint" style="margin-bottom:0">Dismissing a list files nothing. If a payment does not show up, the notification says why. The optional wait is for no signal at the till: test it once in Airplane Mode.</p></section>`, { back: '#/' });
 }
 
 async function copy(text, what) {
@@ -1541,7 +1632,14 @@ document.addEventListener('click', async (event) => {
     add: openAdd,
     close: closeSheet,
     expense: () => openExpense(el.dataset.group),
-    moneyin: openMoneyIn,
+    moneyin: () => openMoneyIn(el.dataset.currency),
+    correct: () => openCorrect(Number(el.dataset.currency)),
+    'cash-row': () => openCashRow(Number(el.dataset.source), el.dataset.id),
+    'delete-cash': async () => {
+      const t = m().transactions.find((x) => x.id === el.dataset.id);
+      if (!t || !confirm(`Delete ${t.description}? ${money(Math.abs(t.amount), t.currency)} ${t.amount > 0 ? 'comes off' : 'goes back onto'} your ${CASH_NAME[t.currency]} cash.`)) return;
+      await save(deleteCashRow(m(), t.id), 'Deleted.');
+    },
     repay: () => openRepay(el.dataset.loan),
     newloan: () => openNewLoan(el.dataset.group, el.dataset.person),
     'edit-loan': () => openNewLoan(null, null, el.dataset.id),
@@ -1754,6 +1852,7 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.dataset.form === 'expense') await submitExpense(form);
     if (form.dataset.form === 'moneyin') await submitMoneyIn(form);
+    if (form.dataset.form === 'correct') await submitCorrect(form);
     if (form.dataset.form === 'repay') await submitRepay(form);
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
     if (form.dataset.form === 'payment') await submitPayment(form);

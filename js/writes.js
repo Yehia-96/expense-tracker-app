@@ -1,7 +1,7 @@
 // Rows the phone creates, written exactly as the desktop stores them: every column present,
 // ids as upper-case GUIDs, money in cents, dates as .NET ticks (strings), flags as 0/1.
 // test/writes.test.mjs checks the column sets against rows the desktop wrote.
-import { msToTicks, GroupKind, Direction, money, remaining, previousSalary, salaryChange, advanceDue } from './calc.js';
+import { msToTicks, GroupKind, Direction, money, remaining, previousSalary, salaryChange, advanceDue, netPosition } from './calc.js';
 
 export const LOAN_PAYMENT_GROUP = Object.freeze({ name: 'Loan payments', icon: 'Receipt', colorHex: '#F0A868' });
 
@@ -155,6 +155,31 @@ export function addMoneyIn({ currency, amount, description, occurredOn }) {
       OccurredOn: msToTicks(occurredOn), CreatedAt: nowTicks(), Kind: 0,
     },
   }];
+}
+
+/**
+ * Corrects a balance to what you actually hold, as the desktop's SetCashBalanceAsync: the
+ * difference is filed in the ledger, so the history still adds up to the figure on the card.
+ * Nothing to file when the balance is already right.
+ */
+export function correctCash(model, { currency, actual, reason }) {
+  const delta = toCents(actual) - netPosition(model, currency).cashOnHand;
+  if (delta === 0) return [];
+  const id = newId();
+  return [{
+    tbl: 'CashTransactions', id, data: {
+      Id: id, Currency: currency, Amount: delta, Description: reason?.trim() ? reason.trim() : 'Balance corrected by hand',
+      OccurredOn: nowTicks(), CreatedAt: nowTicks(), Kind: 1,
+    },
+  }];
+}
+
+/** Removes money in or a correction. A salary's money takes its line in the job's list with it, as on the PC. */
+export function deleteCashRow(model, transactionId) {
+  return [
+    { tbl: 'CashTransactions', id: transactionId, data: null },
+    ...model.salary.payments.filter((p) => p.cashId === transactionId).map((p) => ({ tbl: 'SalaryPayments', id: p.id, data: null })),
+  ];
 }
 
 /**

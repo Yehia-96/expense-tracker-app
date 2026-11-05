@@ -16,6 +16,9 @@ export function money(cents, currency) {
 export const GroupKind = Object.freeze({ Expense: 0, Loan: 1, Conversion: 2 });
 export const Direction = Object.freeze({ Borrowed: 0, Lent: 1 });
 export const RecurrenceUnit = Object.freeze({ Day: 0, Week: 1, Month: 2, Year: 3 });
+export const CashSource = Object.freeze({
+  Received: 0, Correction: 1, Expense: 2, RepaymentMade: 3, RepaymentReceived: 4, Conversion: 5, LoanTaken: 6, LoanGiven: 7,
+});
 export const Period = Object.freeze({ Total: 0, Week: 1, Month: 2, Year: 3 });
 
 const TICKS_AT_UNIX_EPOCH = 621355968000000000n;
@@ -207,6 +210,53 @@ export function salaryChange(previous, amount) {
   if (!previous) return null;
   const diff = amount - previous.amount;
   return { diff, percent: previous.amount ? (diff / previous.amount) * 100 : null };
+}
+
+// ---------- The money in and money out pages ----------
+
+/**
+ * Every movement of one currency's cash in one direction, newest first: the desktop's
+ * BalanceService.GetCashFlowAsync. `id` is the row it came from, in the table `source` implies.
+ */
+export function cashFlow(model, currency, incoming) {
+  const rows = [];
+  const add = (id, source, amount, description, context, occurredOn) => rows.push({ id, source, amount, description, context, occurredOn });
+  const cashOf = (loan) => loan.group?.project?.currency === currency;
+
+  for (const t of model.transactions.filter((x) => x.currency === currency && (incoming ? x.amount > 0 : x.amount < 0))) {
+    add(t.id, t.kind === 1 ? CashSource.Correction : CashSource.Received, t.amount, t.description, null, t.occurredOn);
+  }
+
+  const principal = incoming ? Direction.Borrowed : Direction.Lent;
+  for (const l of model.loans.filter((x) => x.movesCash && x.direction === principal && cashOf(x))) {
+    add(l.id, incoming ? CashSource.LoanTaken : CashSource.LoanGiven, incoming ? l.amount : -l.amount, l.title,
+      `${incoming ? 'Borrowed from' : 'Lent to'} ${l.counterparty}`, l.occurredOn);
+  }
+
+  // Being paid back is money in; paying back is money out.
+  const repaid = incoming ? Direction.Lent : Direction.Borrowed;
+  for (const p of model.payments.filter((x) => x.loan?.direction === repaid && cashOf(x.loan))) {
+    add(p.id, incoming ? CashSource.RepaymentReceived : CashSource.RepaymentMade, incoming ? p.amount : -p.amount, p.loan.title,
+      incoming ? `${p.loan.counterparty} paying you back` : `Paid back to ${p.loan.counterparty}`, p.paidOn);
+  }
+
+  if (incoming) {
+    for (const e of model.expenses.filter((x) => x.group?.kind === GroupKind.Conversion && x.exchangedCurrency === currency && x.exchangedAmount !== null)) {
+      add(e.id, CashSource.Conversion, e.exchangedAmount, e.title, `Converted from ${money(e.amount, currencyOf(e))}`, e.occurredOn);
+    }
+  } else {
+    for (const e of model.expenses.filter((x) => x.loanPaymentId === null && currencyOf(x) === currency)) {
+      const place = `${e.group.project.name} / ${e.group.name}`;
+      if (e.group.kind === GroupKind.Conversion) {
+        add(e.id, CashSource.Conversion, -e.amount, e.title,
+          e.exchangedAmount !== null && e.exchangedCurrency !== null ? `Converted into ${money(e.exchangedAmount, e.exchangedCurrency)}` : place, e.occurredOn);
+      } else {
+        add(e.id, CashSource.Expense, -e.amount, e.title, place, e.occurredOn);
+      }
+    }
+  }
+
+  return rows.sort((a, b) => b.occurredOn - a.occurredOn);
 }
 
 // ---------- Repeating entries (booked by the PC; the phone keeps the rules) ----------
