@@ -1,6 +1,6 @@
 ﻿// Keeps the app itself on the phone, so it opens with no signal. Data is never cached here:
 // it lives in IndexedDB (js/store.js), and every call to the server goes straight out.
-const VERSION = 'et-20261105210336';
+const VERSION = 'et-20261107220121';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/api.js', 'js/store.js', 'js/calc.js', 'js/writes.js',

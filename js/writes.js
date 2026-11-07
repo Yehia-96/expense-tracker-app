@@ -249,6 +249,15 @@ export function settleLoan(model, loan, paidOn = Date.now()) {
   return addRepayment(model, { loan, amount: left / 100, paidOn, note: 'Settled in full' });
 }
 
+/**
+ * Closes a loan by hand, or opens it again, as the desktop's SetLoanClosedAsync: settled
+ * without cash, for money paid outside the app or a debt let go. No repayment and no expense:
+ * the cash stays as it is, and what was left stops counting as owed.
+ */
+export function setLoanClosed(loan, closed) {
+  return [{ tbl: 'Entries', id: loan.id, data: { ...loan.raw, IsClosed: closed ? 1 : 0, UpdatedAt: nowTicks() } }];
+}
+
 /** A repayment changed, and the entry filed for it with it, so loan, group and cash move together. */
 export function updateRepayment(model, payment, { amount, paidOn, note }) {
   const tidyNote = note?.trim() ? note.trim() : null;

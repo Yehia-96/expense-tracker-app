@@ -207,5 +207,9 @@ textarea.input { height: 76px; padding: 12px 14px; resize: none; }
 .cash-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
 .cash-links .btn { height: 36px; padding: 0 6px; gap: 5px; font-size: 13px; }
 
+.check-row { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 4px; padding: 12px; border-radius: var(--radius-m); background: var(--surface-sunken); }
+.check-row input { width: 20px; height: 20px; margin-top: 1px; flex: none; accent-color: var(--accent); }
+.check-row b { display: block; font-weight: 600; margin-bottom: 4px; }
+
 /* Hidden means hidden, whatever display a class gives the element. */
 [hidden] { display: none !important; }

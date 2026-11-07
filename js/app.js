@@ -8,7 +8,7 @@ import {
   RecurrenceUnit, frequencyText, advanceDue, cashFlow, CashSource,
 } from './calc.js';
 import {
-  addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, updateRepayment, deleteRepayment,
+  addExpense, addMoneyIn, addRepayment, addLoan, updateLoan, deleteLoan, settleLoan, setLoanClosed, updateRepayment, deleteRepayment,
   normalizeName, addPerson, addQuickTitle, deleteQuickTitle, addRule, updateRule, skipRule, setRuleActive, deleteRule,
   addConversion, updateConversion, correctCash, deleteCashRow, addSalaryJob, updateSalaryJob, deleteSalaryJob, addSalary, updateSalary, deleteSalary, salaryNote, monthLabel, updateExpense, deleteExpense, hashOf, LOAN_PAYMENT_GROUP,
   addShoppingItem, updateShoppingItem, deleteShoppingItem, buyShoppingItem, unbuyShoppingItem, startNextTrip,
@@ -887,6 +887,7 @@ function openLoan(id) {
     ${bar(paidSoFar(l), l.amount)}
     ${l.dueDate ? `<div class="kv"><span>Due</span><span>${dateFmt.format(new Date(l.dueDate))}</span></div>` : ''}
     ${l.movesCash ? '' : '<div class="kv"><span>Cash</span><span>Not in cash</span></div>'}
+    ${l.isClosed && remaining(l) > 0 ? `<div class="kv"><span>Settled</span><span>Without cash, ${esc(money(remaining(l), c))} unpaid</span></div>` : ''}
     ${l.note ? `<p class="sec">${esc(l.note)}</p>` : ''}
     <div class="section" style="margin-left:0"><span>${l.payments.length === 1 ? '1 repayment' : `${l.payments.length} repayments`}</span>
       ${l.payments.length ? '<span>Tap one to change it</span>' : ''}</div>
@@ -896,8 +897,44 @@ function openLoan(id) {
     <div class="actions">
       <button class="btn" data-act="edit-loan" data-id="${l.id}">${icon('pencil')}Edit</button>
       ${settled ? '' : `<button class="btn" data-act="settle" data-id="${l.id}">${icon('check')}Settle</button>`}
+      ${l.isClosed && remaining(l) > 0 ? `<button class="btn" data-act="reopen" data-id="${l.id}">Reopen</button>` : ''}
     </div>
     ${settled ? '' : `<button class="btn primary wide" style="margin-top:10px" data-act="repay" data-loan="${l.id}">${icon('plus')}Record repayment</button>`}`);
+}
+
+/**
+ * Settling a loan: a repayment of what is left, through your cash; or, with the box ticked,
+ * closed without cash, for money paid outside the app or a debt let go.
+ */
+function openSettle(id) {
+  const l = m().entryById.get(id);
+  if (!l) return;
+  const c = l.group.project.currency;
+  const left = money(remaining(l), c);
+  const borrowed = l.direction === Direction.Borrowed;
+  const cash = `your ${CASH_NAME[c]} cash`;
+  openSheet(`<form data-form="settle" data-id="${l.id}">
+    <h2>Settle ${esc(l.title)}?</h2>
+    <div class="subtitle">${borrowed
+      ? `A repayment of ${esc(left)} will be recorded today, taken from ${cash}, clearing the loan.`
+      : `A repayment of ${esc(left)} will be recorded today, added to ${cash}, clearing the loan.`}</div>
+    <label class="check-row"><input type="checkbox" name="withoutCash">
+      <span><b>Settled another way: don't ${borrowed ? 'take it from' : 'add it to'} my cash</b>
+        <span class="hint">${borrowed
+          ? `Paid with money the app doesn't track, or ${esc(l.counterparty)} let it go. The loan closes with ${esc(left)} unpaid; nothing comes off ${cash} or is filed as spending.`
+          : `Paid to you outside the app, or you let it go. The loan closes with ${esc(left)} unpaid; nothing is added to ${cash}.`}</span></span></label>
+    <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Settle it</button></div>
+  </form>`);
+}
+
+async function submitSettle(form) {
+  const l = m().entryById.get(form.dataset.id);
+  if (form.withoutCash.checked) {
+    await save(setLoanClosed(l, true), `${l.title} is settled, without cash.`);
+  } else {
+    await save(settleLoan(m(), l), `${l.title} is settled.`);
+  }
+  openLoan(l.id);
 }
 
 /** One repayment, to change or take back: the PC's Edit and Delete on a repayment row. */
@@ -1673,11 +1710,10 @@ document.addEventListener('click', async (event) => {
       drawPeoplePick(form);
     },
     payment: () => openPayment(el.dataset.id),
-    settle: async () => {
+    settle: () => openSettle(el.dataset.id),
+    reopen: async () => {
       const l = m().entryById.get(el.dataset.id);
-      const c = l.group.project.currency;
-      if (!confirm(`Settle ${l.title}? A repayment of ${money(remaining(l), c)} will be recorded today, clearing the loan.`)) return;
-      await save(settleLoan(m(), l), `${l.title} is settled.`);
+      await save(setLoanClosed(l, false), `${l.title} is open again: ${money(remaining(l), l.group.project.currency)} owed.`);
       openLoan(l.id);
     },
     'delete-loan': async () => {
@@ -1853,6 +1889,7 @@ document.addEventListener('submit', async (event) => {
     if (form.dataset.form === 'expense') await submitExpense(form);
     if (form.dataset.form === 'moneyin') await submitMoneyIn(form);
     if (form.dataset.form === 'correct') await submitCorrect(form);
+    if (form.dataset.form === 'settle') await submitSettle(form);
     if (form.dataset.form === 'repay') await submitRepay(form);
     if (form.dataset.form === 'newloan') await submitNewLoan(form);
     if (form.dataset.form === 'payment') await submitPayment(form);
