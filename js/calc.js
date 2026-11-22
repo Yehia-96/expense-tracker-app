@@ -73,9 +73,12 @@ export function buildModel(rows) {
   }));
 
   const entryById = new Map(entries.map((e) => [e.id, e]));
+  // Repayments marked on the phone as made outside your cash (writes.js OUTSIDE_CASH).
+  const outsideCash = new Set(by('RepaymentsOutsideCash').map((r) => r.PaymentId));
   const payments = by('LoanPayments').map((p) => ({
     id: p.Id, loanId: p.LoanEntryId, loan: entryById.get(p.LoanEntryId) ?? null,
-    amount: cents(p.Amount), paidOn: ticksToMs(p.PaidOn), note: p.Note, raw: p,
+    amount: cents(p.Amount), paidOn: ticksToMs(p.PaidOn), note: p.Note,
+    movesCash: !outsideCash.has(p.Id), raw: p,
   }));
   for (const p of payments) p.loan?.payments.push(p);
 
@@ -235,7 +238,7 @@ export function cashFlow(model, currency, incoming) {
 
   // Being paid back is money in; paying back is money out.
   const repaid = incoming ? Direction.Lent : Direction.Borrowed;
-  for (const p of model.payments.filter((x) => x.loan?.direction === repaid && cashOf(x.loan))) {
+  for (const p of model.payments.filter((x) => x.movesCash && x.loan?.direction === repaid && cashOf(x.loan))) {
     add(p.id, incoming ? CashSource.RepaymentReceived : CashSource.RepaymentMade, incoming ? p.amount : -p.amount, p.loan.title,
       incoming ? `${p.loan.counterparty} paying you back` : `Paid back to ${p.loan.counterparty}`, p.paidOn);
   }
@@ -319,7 +322,8 @@ export function netPosition(model, currency) {
   const spentOnExpenses = sum(outgoing.filter((e) => e.group.kind !== GroupKind.Conversion), (e) => e.amount);
   const convertedOut = sum(outgoing.filter((e) => e.group.kind === GroupKind.Conversion), (e) => e.amount);
 
-  const repaymentsHere = model.payments.filter((p) => p.loan && currencyOf(p.loan) === currency);
+  // Only repayments that went through your cash move it; the rest just lower what is owed.
+  const repaymentsHere = model.payments.filter((p) => p.movesCash && p.loan && currencyOf(p.loan) === currency);
   const repaymentsMade = sum(repaymentsHere.filter((p) => p.loan.direction === Direction.Borrowed), (p) => p.amount);
   const repaymentsReceived = sum(repaymentsHere.filter((p) => p.loan.direction === Direction.Lent), (p) => p.amount);
 

@@ -225,11 +225,24 @@ const mirrorOf = (model, paymentId) => model.expenses.find((e) => e.loanPaymentI
 const loanFacts = (loan) => ({ projectId: loan.group.projectId, title: loan.title, counterparty: loan.counterparty });
 
 /**
- * A repayment against a loan. Paying back money you borrowed is also filed as an expense in
- * the project's "Loan payments" group, made here if the project has none yet, as the desktop's
- * LoanService does. Being paid back is cash arriving, and files no expense.
+ * Repayments that did not go through your cash (phone only, for now): a row per repayment,
+ * keyed by its id, in a table of its own. The desktop skips tables it does not know, so its
+ * LoanPayments rows stay exactly as it writes them; it still counts these in its cash until it
+ * learns the table too.
  */
-export function addRepayment(model, { loan, amount, paidOn, note }) {
+export const OUTSIDE_CASH = 'RepaymentsOutsideCash';
+
+const outsideCashRow = (paymentId) => ({
+  tbl: OUTSIDE_CASH, id: paymentId, data: { Id: paymentId, PaymentId: paymentId, CreatedAt: nowTicks() },
+});
+
+/**
+ * A repayment against a loan. Through your cash (`movesCash`, the default), paying back money
+ * you borrowed is also filed as an expense in the project's "Loan payments" group, made here if
+ * the project has none yet, as the desktop's LoanService does. Being paid back is cash arriving,
+ * and files no expense. Outside your cash, only the loan goes down: no expense, no cash.
+ */
+export function addRepayment(model, { loan, amount, paidOn, note, movesCash = true }) {
   const payment = { id: newId(), amount: toCents(amount), paidOn, note: note?.trim() ? note.trim() : null };
   const changes = [{
     tbl: 'LoanPayments', id: payment.id, data: {
@@ -238,7 +251,8 @@ export function addRepayment(model, { loan, amount, paidOn, note }) {
     },
   }];
 
-  if (loan.direction === Direction.Borrowed) changes.push(repaymentEntry(model, loanFacts(loan), payment, changes));
+  if (!movesCash) changes.push(outsideCashRow(payment.id));
+  else if (loan.direction === Direction.Borrowed) changes.push(repaymentEntry(model, loanFacts(loan), payment, changes));
   return changes;
 }
 
@@ -258,19 +272,30 @@ export function setLoanClosed(loan, closed) {
   return [{ tbl: 'Entries', id: loan.id, data: { ...loan.raw, IsClosed: closed ? 1 : 0, UpdatedAt: nowTicks() } }];
 }
 
-/** A repayment changed, and the entry filed for it with it, so loan, group and cash move together. */
-export function updateRepayment(model, payment, { amount, paidOn, note }) {
+/**
+ * A repayment changed, and the entry filed for it with it, so loan, group and cash move together.
+ * Moving it into or out of your cash adds or removes its "Loan payments" entry to match.
+ */
+export function updateRepayment(model, payment, { amount, paidOn, note, movesCash = payment.movesCash }) {
   const tidyNote = note?.trim() ? note.trim() : null;
   const changes = [{
     tbl: 'LoanPayments', id: payment.id, data: { ...payment.raw, Amount: toCents(amount), PaidOn: msToTicks(paidOn), Note: tidyNote },
   }];
+
+  if (movesCash && !payment.movesCash) changes.push({ tbl: OUTSIDE_CASH, id: payment.id, data: null });
+  if (!movesCash && payment.movesCash) changes.push(outsideCashRow(payment.id));
+
   const mirror = mirrorOf(model, payment.id);
-  if (mirror) {
+  if (mirror && !movesCash) {
+    changes.push(...removeEntry(model, mirror.id));
+  } else if (mirror) {
     changes.push({
       tbl: 'Entries', id: mirror.id, data: {
         ...mirror.raw, Amount: toCents(amount), OccurredOn: msToTicks(paidOn), Note: tidyNote, UpdatedAt: nowTicks(),
       },
     });
+  } else if (movesCash && payment.loan?.direction === Direction.Borrowed) {
+    changes.push(repaymentEntry(model, loanFacts(payment.loan), { id: payment.id, amount: toCents(amount), paidOn, note: tidyNote }, changes));
   }
   return changes;
 }
@@ -278,7 +303,11 @@ export function updateRepayment(model, payment, { amount, paidOn, note }) {
 /** A repayment taken back: the loan has that much outstanding again, and its entry goes too. */
 export function deleteRepayment(model, payment) {
   const mirror = mirrorOf(model, payment.id);
-  return [{ tbl: 'LoanPayments', id: payment.id, data: null }, ...(mirror ? removeEntry(model, mirror.id) : [])];
+  return [
+    { tbl: 'LoanPayments', id: payment.id, data: null },
+    ...(payment.movesCash ? [] : [{ tbl: OUTSIDE_CASH, id: payment.id, data: null }]),
+    ...(mirror ? removeEntry(model, mirror.id) : []),
+  ];
 }
 
 /** A loan deleted with every repayment against it and their entries, as the desktop's cascade does. */
@@ -316,7 +345,8 @@ export function updateLoan(model, loan, { title, counterparty, direction, amount
 
   for (const payment of loan.payments) {
     const mirror = mirrorOf(model, payment.id);
-    if (direction !== Direction.Borrowed) {
+    // Only repayments made through your cash are filed as spending.
+    if (direction !== Direction.Borrowed || !payment.movesCash) {
       if (mirror) changes.push(...removeEntry(model, mirror.id));
     } else if (mirror) {
       changes.push({ tbl: 'Entries', id: mirror.id, data: { ...mirror.raw, Title: `Repaid: ${facts.title}`, Payee: facts.counterparty || null } });

@@ -690,29 +690,43 @@ function openRepay(loanId) {
       <div class="field"><label>Amount</label><input class="input amount" name="amount" inputmode="decimal" required></div>
       <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${todayValue()}" required></div>
     </div>
+    <div class="field"><label class="weigh"><input type="checkbox" name="movesCash" checked> <span data-role="cash-label"></span></label></div>
     <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" placeholder="Bank transfer"></div>
     <div class="actions"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Record it</button></div>
   </form>`);
 
   const form = sheet.querySelector('form');
-  const update = () => {
+  const context = () => {
     const l = m().entryById.get(form.loan.value);
-    const c = l.group.project.currency;
-    form.amount.value = (remaining(l) / 100).toFixed(2);
-    sheet.querySelector('[data-role=context]').textContent = l.direction === Direction.Borrowed
-      ? `Paying back ${l.counterparty}. Comes off your ${CASH_NAME[c]} cash.`
-      : `${l.counterparty} paying you back. Goes onto your ${CASH_NAME[c]} cash.`;
+    describeRepaymentCash(sheet, l, form.movesCash.checked);
+  };
+  const update = () => {
+    form.amount.value = (remaining(m().entryById.get(form.loan.value)) / 100).toFixed(2);
+    context();
   };
   update();
   form.loan.addEventListener('change', update);
+  form.movesCash.addEventListener('change', context);
+}
+
+/** The cash box's wording and what the repayment does, for the loan's direction and the box. */
+function describeRepaymentCash(sheet, loan, movesCash) {
+  const cash = `your ${CASH_NAME[loan.group.project.currency]} cash`;
+  const borrowed = loan.direction === Direction.Borrowed;
+  sheet.querySelector('[data-role=cash-label]').textContent = borrowed
+    ? 'The money came out of my cash' : 'The money went into my cash';
+  sheet.querySelector('[data-role=context]').textContent = borrowed
+    ? `Paying back ${loan.counterparty}. ${movesCash ? `Comes off ${cash}.` : `Only the loan goes down: ${cash} stays as it is.`}`
+    : `${loan.counterparty} paying you back. ${movesCash ? `Goes onto ${cash}.` : `Only the loan goes down: ${cash} stays as it is.`}`;
 }
 
 async function submitRepay(form) {
   const loan = m().entryById.get(form.loan.value);
   const amount = parseAmount(form.amount.value);
   if (!(amount > 0)) return sheetProblem(form, 'A repayment has to be more than zero.');
-  await save(addRepayment(m(), { loan, amount, paidOn: dayToMs(form.date.value), note: form.note.value }),
-    `Recorded ${money(Math.round(amount * 100), loan.group.project.currency)} against ${loan.title}.`);
+  const movesCash = form.movesCash.checked;
+  await save(addRepayment(m(), { loan, amount, paidOn: dayToMs(form.date.value), note: form.note.value, movesCash }),
+    `Recorded ${money(Math.round(amount * 100), loan.group.project.currency)} against ${loan.title}${movesCash ? '' : ', outside your cash'}.`);
 }
 
 /**
@@ -892,7 +906,8 @@ function openLoan(id) {
     <div class="section" style="margin-left:0"><span>${l.payments.length === 1 ? '1 repayment' : `${l.payments.length} repayments`}</span>
       ${l.payments.length ? '<span>Tap one to change it</span>' : ''}</div>
     <div class="card list">${[...l.payments].sort((a, b) => b.paidOn - a.paidOn).map((p) => `
-      <button class="row" data-act="payment" data-id="${p.id}"><span class="main"><span class="title">${dateFmt.format(new Date(p.paidOn))}</span>${p.note ? `<span class="sub">${esc(p.note)}</span>` : ''}</span>
+      <button class="row" data-act="payment" data-id="${p.id}"><span class="main"><span class="title">${dateFmt.format(new Date(p.paidOn))}</span>${
+        p.note || !p.movesCash ? `<span class="sub">${esc([p.movesCash ? null : 'Outside your cash', p.note].filter(Boolean).join(' · '))}</span>` : ''}</span>
         <span class="end">${moneyHtml(p.amount, c, 'row-amt')}</span></button>`).join('') || '<div class="empty">None yet.</div>'}</div>
     <div class="actions">
       <button class="btn" data-act="edit-loan" data-id="${l.id}">${icon('pencil')}Edit</button>
@@ -942,16 +957,22 @@ function openPayment(id) {
   const p = m().payments.find((x) => x.id === id);
   if (!p?.loan) return;
   const c = p.loan.group.project.currency;
-  openSheet(`<form data-form="payment" data-id="${p.id}">
-    <h2>Repayment</h2><div class="subtitle">${esc(p.loan.title)} · ${p.loan.direction === Direction.Borrowed ? 'to' : 'from'} ${esc(p.loan.counterparty)}</div>
+  const sheet = openSheet(`<form data-form="payment" data-id="${p.id}">
+    <h2>Repayment</h2><div class="subtitle" data-role="context"></div>
     <div class="two">
       <div class="field"><label>Amount (${SYMBOL[c]})</label><input class="input amount" name="amount" inputmode="decimal" required value="${(p.amount / 100).toFixed(2)}"></div>
       <div class="field"><label>Date</label><input class="input" name="date" type="date" value="${dateValue(p.paidOn)}" required></div>
     </div>
+    <div class="field"><label class="weigh"><input type="checkbox" name="movesCash" ${p.movesCash ? 'checked' : ''}> <span data-role="cash-label"></span></label></div>
     <div class="field"><label>Note <span class="opt">(optional)</span></label><input class="input" name="note" value="${esc(p.note ?? '')}"></div>
     <div class="actions"><button type="button" class="btn danger" data-act="delete-payment" data-id="${p.id}">${icon('close')}Delete</button>
       <button class="btn primary" type="submit">Save changes</button></div>
   </form>`);
+
+  const form = sheet.querySelector('form');
+  const context = () => describeRepaymentCash(sheet, p.loan, form.movesCash.checked);
+  context();
+  form.movesCash.addEventListener('change', context);
 }
 
 async function submitPayment(form) {
@@ -959,7 +980,7 @@ async function submitPayment(form) {
   const amount = parseAmount(form.amount.value);
   if (!(amount > 0)) return sheetProblem(form, 'A repayment has to be more than zero.');
   const paidOn = form.date.value === dateValue(p.paidOn) ? p.paidOn : dayToMs(form.date.value);
-  await save(updateRepayment(m(), p, { amount, paidOn, note: form.note.value }), 'Repayment saved.');
+  await save(updateRepayment(m(), p, { amount, paidOn, note: form.note.value, movesCash: form.movesCash.checked }), 'Repayment saved.');
   openLoan(p.loan.id);
 }
 
@@ -1723,8 +1744,8 @@ document.addEventListener('click', async (event) => {
     },
     'delete-payment': async () => {
       const p = m().payments.find((x) => x.id === el.dataset.id);
-      if (!p || !confirm(`Delete the ${money(p.amount, p.loan.group.project.currency)} repayment? The loan shows that much outstanding again, `
-        + 'the cash comes back, and its entry in Loan payments goes with it.')) return;
+      if (!p || !confirm(`Delete the ${money(p.amount, p.loan.group.project.currency)} repayment? The loan shows that much outstanding again`
+        + (p.movesCash ? ', the cash comes back, and its entry in Loan payments goes with it.' : '. Your cash stays as it is: it never went through it.'))) return;
       await save(deleteRepayment(m(), p), 'Repayment deleted.');
       openLoan(p.loan.id);
     },
